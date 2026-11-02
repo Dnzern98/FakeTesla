@@ -7,6 +7,7 @@ import android.content.SharedPreferences
 class App : Application() {
     override fun onCreate() {
         super.onCreate()
+        org.maplibre.android.MapLibre.getInstance(this)
         Prefs.init(this)
         ObdManager.init(this)
     }
@@ -29,6 +30,11 @@ object Prefs {
     val apiKey: String
         get() = customApiKey.ifBlank { BuildConfig.MAPS_API_KEY }
 
+    /** Use Google (traffic, better search) instead of the free OpenStreetMap services. */
+    var useGoogle: Boolean
+        get() = sp.getBoolean("use_google", false)
+        set(v) = sp.edit().putBoolean("use_google", v).apply()
+
     var home: PlaceRef?
         get() = readPlace("home")
         set(v) = writePlace("home", v)
@@ -37,11 +43,22 @@ object Prefs {
         get() = readPlace("work")
         set(v) = writePlace("work", v)
 
+    private fun placeToJson(p: PlaceRef): org.json.JSONObject {
+        val o = org.json.JSONObject().put("name", p.name).put("placeId", p.placeId ?: "")
+        val ll = p.latLng
+        if (ll != null) o.put("lat", ll.lat).put("lng", ll.lng)
+        return o
+    }
+
+    private fun placeFromJson(o: org.json.JSONObject): PlaceRef {
+        val ll = if (o.has("lat") && o.has("lng")) LatLng(o.getDouble("lat"), o.getDouble("lng")) else null
+        return PlaceRef(o.getString("name"), o.optString("placeId").ifBlank { null }, ll)
+    }
+
     private fun readPlace(key: String): PlaceRef? {
         val s = sp.getString(key, null) ?: return null
         return try {
-            val o = org.json.JSONObject(s)
-            PlaceRef(o.getString("name"), o.optString("placeId").ifBlank { null }, null)
+            placeFromJson(org.json.JSONObject(s))
         } catch (_: Exception) {
             null
         }
@@ -52,8 +69,7 @@ object Prefs {
             sp.edit().remove(key).apply()
             return
         }
-        val o = org.json.JSONObject().put("name", p.name).put("placeId", p.placeId ?: "")
-        sp.edit().putString(key, o.toString()).apply()
+        sp.edit().putString(key, placeToJson(p).toString()).apply()
     }
 
     /** Last few destinations, newest first. */
@@ -61,20 +77,17 @@ object Prefs {
         val s = sp.getString("recents", null) ?: return emptyList()
         return try {
             val a = org.json.JSONArray(s)
-            List(a.length()) {
-                val o = a.getJSONObject(it)
-                PlaceRef(o.getString("name"), o.optString("placeId").ifBlank { null }, null)
-            }
+            List(a.length()) { placeFromJson(a.getJSONObject(it)) }
         } catch (_: Exception) {
             emptyList()
         }
     }
 
     fun addRecent(p: PlaceRef) {
-        if (p.placeId == null) return
-        val list = (listOf(p) + recents().filter { it.placeId != p.placeId }).take(5)
+        if (p.placeId == null && p.latLng == null) return
+        val list = (listOf(p) + recents().filter { it.name != p.name }).take(5)
         val a = org.json.JSONArray()
-        for (r in list) a.put(org.json.JSONObject().put("name", r.name).put("placeId", r.placeId ?: ""))
+        for (r in list) a.put(placeToJson(r))
         sp.edit().putString("recents", a.toString()).apply()
     }
 

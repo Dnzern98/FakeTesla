@@ -22,8 +22,9 @@ object Geo {
         return 2 * r * atan2(sqrt(h), sqrt(1 - h))
     }
 
-    /** Google encoded polyline → points. */
-    fun decode(enc: String): List<LatLng> {
+    /** Google encoded polyline → points (precision 5; Valhalla uses 6). */
+    fun decode(enc: String, precision: Int = 5): List<LatLng> {
+        val factor = if (precision == 6) 1e6 else 1e5
         val out = ArrayList<LatLng>()
         var index = 0
         var lat = 0
@@ -46,7 +47,7 @@ object Geo {
                 shift += 5
             } while (b >= 0x20 && index < enc.length)
             lng += if ((result and 1) != 0) (result shr 1).inv() else (result shr 1)
-            out.add(LatLng(lat / 1e5, lng / 1e5))
+            out.add(LatLng(lat / factor, lng / factor))
         }
         return out
     }

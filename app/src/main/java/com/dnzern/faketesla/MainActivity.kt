@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -44,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -51,17 +54,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
-import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.CameraPosition
-import com.google.android.gms.maps.model.LatLngBounds
-import com.google.maps.android.compose.rememberCameraPositionState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Date
 import kotlin.math.roundToInt
-import com.google.android.gms.maps.model.LatLng as GLatLng
 
 class MainActivity : ComponentActivity() {
 
@@ -153,15 +151,14 @@ fun planningSoc(): Double =
 @Composable
 fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
 
     var screen by remember { mutableStateOf(Screen.Home) }
     var searchMode by remember { mutableStateOf(SearchMode.Trip) }
     var searchReturn by remember { mutableStateOf(Screen.Home) }
-    var hasLocation by remember { mutableStateOf(hasLocationPermission(context)) }
+    var selected by remember { mutableStateOf<GoogleApi.Charger?>(null) }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        hasLocation = hasLocationPermission(context)
         ObdManager.startLocation()
     }
     LaunchedEffect(Unit) { launcher.launch(requiredPermissions()) }
@@ -169,69 +166,81 @@ fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
     val plan by TripRepo.plan.collectAsState()
     val location by ObdManager.location.collectAsState()
 
-    val cameraState = rememberCameraPositionState {
-        position = CameraPosition.fromLatLngZoom(GLatLng(41.015, 28.979), 10f)
-    }
-    var mapLoaded by remember { mutableStateOf(false) }
+    val controller = remember { MapController() }
+    val ready by controller.ready.collectAsState()
+    val idle by controller.idle.collectAsState()
     var centeredOnce by remember { mutableStateOf(false) }
     var showChargers by remember { mutableStateOf(true) }
     var chargers by remember { mutableStateOf<List<GoogleApi.Charger>>(emptyList()) }
     var lastFetch by remember { mutableStateOf<LatLng?>(null) }
 
+    fun refOf(c: GoogleApi.Charger) = PlaceRef(c.name, c.id.takeIf { it.isNotBlank() && !it.startsWith("osm-") }, c.loc)
+
     fun startPlan(origin: PlaceRef?, dest: PlaceRef) {
+        selected = null
         TripRepo.planTrip(origin, dest, planningSoc())
         screen = Screen.Plan
     }
 
-    // Centre on the user once the first position arrives.
-    LaunchedEffect(mapLoaded, location != null) {
-        val l = location
-        if (mapLoaded && l != null && !centeredOnce) {
+    controller.onChargerTap = { c -> selected = c }
+
+    // Start over Istanbul, then jump to the user once a position arrives.
+    LaunchedEffect(ready) {
+        if (ready) controller.moveTo(LatLng(41.015, 28.979), 10.0, animate = false)
+    }
+    LaunchedEffect(ready, location) {
+        val l = location ?: return@LaunchedEffect
+        if (!ready) return@LaunchedEffect
+        controller.showMe(LatLng(l.latitude, l.longitude))
+        if (!centeredOnce) {
             centeredOnce = true
-            try {
-                cameraState.animate(CameraUpdateFactory.newLatLngZoom(GLatLng(l.latitude, l.longitude), 13f))
-            } catch (_: Exception) {
-            }
+            controller.moveTo(LatLng(l.latitude, l.longitude), 13.0)
         }
     }
 
-    // Show the whole route when a plan arrives.
-    LaunchedEffect(plan, mapLoaded, screen) {
+    // Route, stops and destination on the map only while the plan screen is open.
+    LaunchedEffect(ready, plan, screen) {
+        if (!ready) return@LaunchedEffect
         val p = plan
-        if (mapLoaded && p != null && screen == Screen.Plan && p.routePts.size > 1) {
-            val b = LatLngBounds.builder()
-            for (pt in Geo.thin(p.routePts, 200)) b.include(pt.g())
-            try {
-                cameraState.animate(CameraUpdateFactory.newLatLngBounds(b.build(), 80))
-            } catch (_: Exception) {
+        if (screen == Screen.Plan && p != null) {
+            controller.showPlan(p)
+            controller.showChargers(emptyList())
+            with(density) {
+                controller.fit(p.routePts, 140.dp.roundToPx(), 470.dp.roundToPx(), 40.dp.roundToPx())
             }
+        } else {
+            controller.showPlan(null)
+            controller.showChargers(if (showChargers) chargers else emptyList())
         }
     }
 
     // Load fast chargers around the map centre when the map stops moving.
-    LaunchedEffect(cameraState.isMoving, mapLoaded, showChargers, screen) {
-        if (!mapLoaded || !showChargers || screen != Screen.Home || cameraState.isMoving) return@LaunchedEffect
-        val pos = cameraState.position
-        if (pos.zoom < 9f) return@LaunchedEffect
-        val c = LatLng(pos.target.latitude, pos.target.longitude)
+    LaunchedEffect(idle, showChargers, screen) {
+        val (c, zoom) = idle ?: return@LaunchedEffect
+        if (!showChargers || screen != Screen.Home || zoom < 9.0) return@LaunchedEffect
         val radius = when {
-            pos.zoom >= 13f -> 6000.0
-            pos.zoom >= 11f -> 15000.0
-            else -> 35000.0
+            zoom >= 13.0 -> 6000.0
+            zoom >= 11.0 -> 15000.0
+            else -> 30000.0
         }
         val last = lastFetch
         if (last != null && Geo.dist(last, c) < radius / 3) return@LaunchedEffect
-        delay(600L)
+        delay(700L)
         try {
-            chargers = withContext(Dispatchers.IO) { GoogleApi.nearbyChargers(c, radius, Prefs.minChargerKw) }
+            chargers = withContext(Dispatchers.IO) { Providers.nearbyChargers(c, radius, Prefs.minChargerKw) }
             lastFetch = c
+            if (screen == Screen.Home) controller.showChargers(chargers)
         } catch (e: Exception) {
             ObdManager.log("Yakındaki istasyonlar alınamadı: ${e.message}")
         }
     }
 
-    BackHandler(enabled = screen != Screen.Home) {
-        screen = if (screen == Screen.Search) searchReturn else Screen.Home
+    BackHandler(enabled = screen != Screen.Home || selected != null) {
+        if (selected != null && screen == Screen.Home) {
+            selected = null
+        } else {
+            screen = if (screen == Screen.Search) searchReturn else Screen.Home
+        }
     }
 
     Box(
@@ -239,23 +248,15 @@ fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
             .fillMaxSize()
             .background(Pal.Bg)
     ) {
-        MapLayer(
-            cameraState = cameraState,
-            plan = plan,
-            showPlan = screen == Screen.Plan,
-            chargers = chargers,
-            showChargers = showChargers,
-            myLocationEnabled = hasLocation,
-            topPadding = 120.dp,
-            bottomPadding = if (screen == Screen.Plan) 440.dp else 150.dp,
-            onMapLoaded = { mapLoaded = true },
-            onChargerClick = { c -> startPlan(null, PlaceRef(c.name, c.id.ifBlank { null }, c.loc)) }
-        )
+        MapLayer(controller)
 
         when (screen) {
             Screen.Home -> HomeOverlay(
                 plan = plan,
                 chargersOn = showChargers,
+                selected = selected,
+                onCloseSelected = { selected = null },
+                onGoSelected = { c -> startPlan(null, refOf(c)) },
                 onSearch = {
                     searchMode = SearchMode.Trip
                     searchReturn = Screen.Home
@@ -264,17 +265,13 @@ fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
                 onMenu = { screen = Screen.Menu },
                 onCar = { screen = Screen.Car },
                 onShowPlan = { screen = Screen.Plan },
-                onToggleChargers = { showChargers = !showChargers },
+                onToggleChargers = {
+                    showChargers = !showChargers
+                    controller.showChargers(if (showChargers) chargers else emptyList())
+                },
                 onRecenter = {
                     val l = ObdManager.currentLatLng()
-                    if (l != null) {
-                        scope.launch {
-                            try {
-                                cameraState.animate(CameraUpdateFactory.newLatLngZoom(l.g(), 14f))
-                            } catch (_: Exception) {
-                            }
-                        }
-                    }
+                    if (l != null) controller.moveTo(l, 14.0)
                 },
                 onHome = {
                     val h = Prefs.home
@@ -300,7 +297,7 @@ fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
                     val here = ObdManager.currentLatLng()
                     val nearest = if (here != null) chargers.minByOrNull { Geo.dist(here, it.loc) } else chargers.firstOrNull()
                     if (nearest != null) {
-                        startPlan(null, PlaceRef(nearest.name, nearest.id.ifBlank { null }, nearest.loc))
+                        startPlan(null, refOf(nearest))
                     } else {
                         ObdManager.log("Yakında hızlı şarj istasyonu bulunamadı")
                     }
@@ -362,6 +359,9 @@ fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
 fun HomeOverlay(
     plan: Plan?,
     chargersOn: Boolean,
+    selected: GoogleApi.Charger?,
+    onCloseSelected: () -> Unit,
+    onGoSelected: (GoogleApi.Charger) -> Unit,
     onSearch: () -> Unit,
     onMenu: () -> Unit,
     onCar: () -> Unit,
@@ -380,6 +380,7 @@ fun HomeOverlay(
         Column(
             modifier = Modifier
                 .align(Alignment.TopStart)
+                .statusBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -430,6 +431,7 @@ fun HomeOverlay(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
                 .padding(end = 16.dp, bottom = if (plan != null) 230.dp else 160.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -442,10 +444,55 @@ fun HomeOverlay(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
                 .padding(12.dp)
                 .fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            if (selected != null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .shadow(12.dp, RoundedCornerShape(20.dp))
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(Pal.Chip)
+                        .padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Glyph(Ic.Bolt, Pal.Green, 20.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            selected.name,
+                            color = Pal.Text,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            "Kapat",
+                            color = Pal.Muted,
+                            fontSize = 14.sp,
+                            modifier = Modifier
+                                .clickable(role = Role.Button, onClick = onCloseSelected)
+                                .padding(8.dp)
+                        )
+                    }
+                    val power = when {
+                        selected.maxKw > 0 -> "${selected.maxKw.roundToInt()} kW"
+                        selected.dcKnown -> "Hızlı şarj (güç bilinmiyor)"
+                        else -> "Güç bilgisi yok"
+                    }
+                    Text(
+                        listOf(power, selected.address).filter { it.isNotBlank() }.joinToString(" · "),
+                        color = Pal.Muted,
+                        fontSize = 13.sp
+                    )
+                    PrimaryButton("Buraya git") { onGoSelected(selected) }
+                }
+            }
             if (plan != null) {
                 Row(
                     modifier = Modifier
@@ -516,7 +563,8 @@ fun ScreenHeader(title: String, onBack: () -> Unit, trailing: @Composable () -> 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 8.dp, end = 16.dp, top = 12.dp, bottom = 8.dp),
+            .statusBarsPadding()
+            .padding(start = 8.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(

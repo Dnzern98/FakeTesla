@@ -19,7 +19,7 @@ class ApiException(msg: String) : Exception(msg)
  */
 object GoogleApi {
 
-    class Suggestion(val placeId: String, val main: String, val secondary: String)
+    class Suggestion(val placeId: String, val main: String, val secondary: String, val latLng: LatLng? = null)
 
     class Step(val distanceM: Int, val staticDurationS: Double, val polyline: String)
 
@@ -36,9 +36,11 @@ object GoogleApi {
         val name: String,
         val address: String,
         val loc: LatLng,
-        /** 0 when Google has no power data for the station. */
+        /** 0 when there is no power data for the station. */
         val maxKw: Double,
-        val connectors: Int
+        val connectors: Int,
+        /** false when we do not know whether the station has a fast (CCS) plug. */
+        val dcKnown: Boolean = true
     )
 
     private fun key(): String {

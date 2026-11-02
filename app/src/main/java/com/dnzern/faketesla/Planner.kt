@@ -102,21 +102,29 @@ object Planner {
 
         // 1. Route ------------------------------------------------------------------
         progress("Rota hesaplanıyor…")
-        val originJson: JSONObject = when {
-            origin?.placeId != null -> GoogleApi.placeIdJson(origin.placeId)
-            origin?.latLng != null -> GoogleApi.latLngJson(origin.latLng)
-            else -> {
-                val here = ObdManager.currentLatLng()
-                    ?: throw ApiException("Konumun alınamadı. GPS'i aç ya da başlangıç adresi yaz.")
-                GoogleApi.latLngJson(here)
+        val google = Providers.google
+        val route: GoogleApi.Route = if (google) {
+            val originJson: JSONObject = when {
+                origin?.placeId != null -> GoogleApi.placeIdJson(origin.placeId)
+                origin?.latLng != null -> GoogleApi.latLngJson(origin.latLng)
+                else -> {
+                    val here = ObdManager.currentLatLng()
+                        ?: throw ApiException("Konumun alınamadı. GPS'i aç ya da başlangıç adresi yaz.")
+                    GoogleApi.latLngJson(here)
+                }
             }
+            val destJson: JSONObject = when {
+                dest.placeId != null -> GoogleApi.placeIdJson(dest.placeId)
+                dest.latLng != null -> GoogleApi.latLngJson(dest.latLng)
+                else -> throw ApiException("Hedef seçilmedi")
+            }
+            GoogleApi.computeRoute(originJson, destJson)
+        } else {
+            val from = origin?.latLng ?: ObdManager.currentLatLng()
+                ?: throw ApiException("Konumun alınamadı. GPS'i aç ya da başlangıç adresi yaz.")
+            val to = dest.latLng ?: throw ApiException("Bu adresin konumu yok, lütfen adresi yeniden ara.")
+            FreeApi.route(from, to)
         }
-        val destJson: JSONObject = when {
-            dest.placeId != null -> GoogleApi.placeIdJson(dest.placeId)
-            dest.latLng != null -> GoogleApi.latLngJson(dest.latLng)
-            else -> throw ApiException("Hedef seçilmedi")
-        }
-        val route = GoogleApi.computeRoute(originJson, destJson)
 
         // 2. Points with a speed for each segment -------------------------------------
         val pts = ArrayList<LatLng>()
@@ -167,7 +175,8 @@ object Planner {
                 while (j < n - 1 && cumKm[j] < target) j++
                 sampleIdx[s] = j
             }
-            val h = GoogleApi.elevations(sampleIdx.map { pts[it] })
+            val samplePts = sampleIdx.map { pts[it] }
+            val h = if (google) GoogleApi.elevations(samplePts) else FreeApi.heights(samplePts)
             val out = DoubleArray(n)
             var s = 0
             for (i in 0 until n) {
@@ -216,7 +225,12 @@ object Planner {
                 for (i in 0 until n) if (cumKm[i] >= startKm - 2 && cumKm[i] <= endKm + 2) seg.add(pts[i])
                 if (seg.size >= 2) {
                     try {
-                        for (c in GoogleApi.chargersAlong(Geo.encode(Geo.thin(seg, 150)), minKw)) {
+                        val list = if (google) {
+                            GoogleApi.chargersAlong(Geo.encode(Geo.thin(seg, 150)), minKw)
+                        } else {
+                            FreeApi.chargersAlong(Geo.thin(seg, 80), 1500, minKw)
+                        }
+                        for (c in list) {
                             if (c.id.isNotBlank() && !found.containsKey(c.id)) found[c.id] = c
                         }
                     } catch (e: Exception) {
@@ -253,7 +267,8 @@ object Planner {
             val detourKm = offsetKm * 1.3 // one way, roads are not straight
             val halfMin = detourKm / 40.0 * 60.0
             val halfWh = detourKm * EnergyModel.whPerKm(40.0)
-            val kw = if (c.maxKw > 0) c.maxKw else minKw.toDouble()
+            // Unknown power: assume the minimum if it surely has a fast plug, else a slow 22 kW.
+            val kw = if (c.maxKw > 0) c.maxKw else if (c.dcKnown) minKw.toDouble() else 22.0
             chargerNodes.add(Node(bestI, c, halfMin, halfWh, kw))
         }
         chargerNodes.sortBy { it.idx }

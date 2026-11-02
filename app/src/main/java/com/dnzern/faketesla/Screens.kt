@@ -12,6 +12,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -106,7 +109,7 @@ fun SearchScreen(mode: SearchMode, onBack: () -> Unit, onPicked: (PlaceRef?, Pla
         }
         delay(350L)
         try {
-            suggestions = withContext(Dispatchers.IO) { GoogleApi.autocomplete(query.trim(), ObdManager.currentLatLng()) }
+            suggestions = withContext(Dispatchers.IO) { Providers.search(query.trim(), ObdManager.currentLatLng()) }
             searchError = null
         } catch (e: Exception) {
             suggestions = emptyList()
@@ -116,7 +119,7 @@ fun SearchScreen(mode: SearchMode, onBack: () -> Unit, onPicked: (PlaceRef?, Pla
 
     fun pick(s: GoogleApi.Suggestion) {
         val full = if (s.secondary.isNotBlank()) "${s.main}, ${s.secondary}" else s.main
-        val ref = PlaceRef(full, s.placeId, null)
+        val ref = PlaceRef(full, s.placeId.ifBlank { null }, s.latLng)
         if (active == Field.Origin) {
             origin = ref
             originText = s.main
@@ -146,6 +149,7 @@ fun SearchScreen(mode: SearchMode, onBack: () -> Unit, onPicked: (PlaceRef?, Pla
             Modifier
                 .fillMaxWidth()
                 .background(Color(0xFF1E2226))
+                .statusBarsPadding()
                 .padding(start = 8.dp, end = 16.dp, top = 12.dp, bottom = 12.dp)
         ) {
             Row(verticalAlignment = Alignment.Top) {
@@ -232,6 +236,8 @@ fun SearchScreen(mode: SearchMode, onBack: () -> Unit, onPicked: (PlaceRef?, Pla
         Column(
             Modifier
                 .fillMaxSize()
+                .navigationBarsPadding()
+                .imePadding()
                 .verticalScroll(rememberScrollState())
         ) {
             searchError?.let {
@@ -307,6 +313,7 @@ fun PlanScreen(onBack: () -> Unit, onStart: (Plan) -> Unit, onReplan: () -> Unit
         Box(
             Modifier
                 .align(Alignment.TopStart)
+                .statusBarsPadding()
                 .padding(16.dp)
         ) {
             RoundButton("Geri", size = 48.dp, onClick = onBack) { Glyph(Ic.Back, Pal.Text) }
@@ -320,6 +327,7 @@ fun PlanScreen(onBack: () -> Unit, onStart: (Plan) -> Unit, onReplan: () -> Unit
                 .shadow(16.dp, RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp))
                 .clip(RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp))
                 .background(Pal.Surface)
+                .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -695,7 +703,7 @@ fun CarScreen(onBack: () -> Unit, onShare: () -> Unit) {
                     }
                 }
             }
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.navigationBarsPadding().height(24.dp))
         }
     }
 }
@@ -727,6 +735,7 @@ fun MenuScreen(onBack: () -> Unit, onCar: () -> Unit, onSetHome: () -> Unit, onS
     var minKw by remember { mutableFloatStateOf(Prefs.minChargerKw.toFloat()) }
     var factor by remember { mutableFloatStateOf(Prefs.consumptionFactor) }
     var key by remember { mutableStateOf(Prefs.customApiKey) }
+    var useGoogle by remember { mutableStateOf(Prefs.useGoogle) }
     var keySaved by remember { mutableStateOf(false) }
 
     Column(
@@ -793,10 +802,26 @@ fun MenuScreen(onBack: () -> Unit, onCar: () -> Unit, onSetHome: () -> Unit, onS
                 MenuRow(Ic.Clock, Pal.Soft, "Sürüş kaydını paylaş", "Son sürüşün CSV dosyası", onShare)
                 Divider()
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Google servislerini kullan", color = Pal.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Kapalıyken ücretsiz OpenStreetMap servisleri kullanılır (anahtar gerekmez, trafik yok). " +
+                                    "Açıkken arama ve rota Google'dan gelir, varış saati trafiğe göre hesaplanır.",
+                                color = Pal.Muted,
+                                fontSize = 13.sp
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Switch(checked = useGoogle, onCheckedChange = {
+                            useGoogle = it
+                            Prefs.useGoogle = it
+                        })
+                    }
                     Text("Google API anahtarı", color = Pal.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                     Text(
-                        if (BuildConfig.MAPS_API_KEY.isNotBlank()) "Uygulamaya gömülü anahtar kullanılıyor. Farklı bir anahtar istersen buraya yaz."
-                        else "Uygulamada gömülü anahtar yok. Adres arama ve rota için buraya anahtar yaz (harita için GitHub'daki MAPS_API_KEY gerekli).",
+                        if (BuildConfig.MAPS_API_KEY.isNotBlank()) "Gömülü anahtar var (${BuildConfig.MAPS_API_KEY.take(8)}…). Farklı bir anahtar istersen buraya yaz."
+                        else "Uygulamada gömülü anahtar yok. Google'ı kullanmak istersen anahtarını buraya yaz.",
                         color = Pal.Muted,
                         fontSize = 13.sp
                     )
@@ -818,7 +843,7 @@ fun MenuScreen(onBack: () -> Unit, onCar: () -> Unit, onSetHome: () -> Unit, onS
                     }
                 }
             }
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.navigationBarsPadding().height(24.dp))
         }
     }
 }

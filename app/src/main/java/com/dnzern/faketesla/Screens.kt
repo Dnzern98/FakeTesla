@@ -425,7 +425,8 @@ private fun PlanContent(p: Plan, onStart: (Plan) -> Unit, onReplan: () -> Unit) 
         ) { Glyph(Ic.Refresh, Pal.Text) }
     }
     Text(
-        "Yenile düğmesi şu anki konum ve şarjla yeniden planlar." +
+        (if (p.traffic) "Varış saati canlı trafiğe göre. " else "Varış saati trafik hariç. ") +
+            "Yenile düğmesi şu anki konum ve şarjla yeniden planlar." +
             if (!p.usedElevation) " Yükseklik verisi alınamadı, yol düz kabul edildi." else "",
         color = Pal.Label,
         fontSize = 12.sp
@@ -736,6 +737,8 @@ fun MenuScreen(onBack: () -> Unit, onCar: () -> Unit, onSetHome: () -> Unit, onS
     var factor by remember { mutableFloatStateOf(Prefs.consumptionFactor) }
     var key by remember { mutableStateOf(Prefs.customApiKey) }
     var useGoogle by remember { mutableStateOf(Prefs.useGoogle) }
+    var tomtom by remember { mutableStateOf(Prefs.tomtomKey) }
+    var tomtomSaved by remember { mutableStateOf(false) }
     var keySaved by remember { mutableStateOf(false) }
 
     Column(
@@ -802,12 +805,38 @@ fun MenuScreen(onBack: () -> Unit, onCar: () -> Unit, onSetHome: () -> Unit, onS
                 MenuRow(Ic.Clock, Pal.Soft, "Sürüş kaydını paylaş", "Son sürüşün CSV dosyası", onShare)
                 Divider()
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Canlı trafik (TomTom)", color = Pal.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (Prefs.tomtomKey.isNotBlank()) "Açık: haritada trafik renkleri görünür, varış saati trafiğe göre hesaplanır."
+                        else "developer.tomtom.com'da ücretsiz hesap açıp aldığın anahtarı buraya yapıştır. Kredi kartı gerekmez.",
+                        color = Pal.Muted,
+                        fontSize = 13.sp
+                    )
+                    TextField(
+                        value = tomtom,
+                        onValueChange = {
+                            tomtom = it
+                            tomtomSaved = false
+                        },
+                        placeholder = { Text("TomTom anahtarı") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = fieldColors(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlineButton(if (tomtomSaved) "Kaydedildi · haritayı görmek için uygulamayı yeniden aç" else "TomTom anahtarını kaydet", Modifier.fillMaxWidth()) {
+                        Prefs.tomtomKey = tomtom
+                        tomtomSaved = true
+                    }
+                }
+                Divider()
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("Google servislerini kullan", color = Pal.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                             Text(
-                                "Açıkken harita, trafik, arama ve rota Google'dan gelir. " +
-                                    "Kapalıyken ücretsiz OpenStreetMap servisleri kullanılır (trafik yok). Google'da sorun olursa kapat.",
+                                "Google faturalandırması aktifse aç: harita, arama ve rota Google'dan gelir. " +
+                                    "Kapalıyken ücretsiz OpenStreetMap servisleri ve (girdiysen) TomTom trafiği kullanılır.",
                                 color = Pal.Muted,
                                 fontSize = 13.sp
                             )

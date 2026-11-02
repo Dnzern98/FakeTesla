@@ -237,3 +237,47 @@ object Providers {
     fun nearbyChargers(center: LatLng, radiusM: Double, minKw: Int): List<GoogleApi.Charger> =
         if (google) GoogleApi.nearbyChargers(center, radiusM, minKw) else FreeApi.nearbyChargers(center, radiusM, minKw)
 }
+
+/**
+ * TomTom: live traffic with a free key (no credit card; 2,500 requests and 50,000 map tiles a day).
+ * The key is pasted in the app's menu.
+ */
+object TomTom {
+    val enabled: Boolean
+        get() = Prefs.tomtomKey.isNotBlank()
+
+    /** Map tiles that colour roads by live traffic, for dark maps. */
+    fun flowTileUrl(): String =
+        "https://api.tomtom.com/traffic/map/4/tile/flow/relative0-dark/{z}/{x}/{y}.png?tileSize=256&key=" +
+            URLEncoder.encode(Prefs.tomtomKey, "UTF-8")
+
+    /** Driving time with current traffic, in seconds. */
+    fun travelTimeS(from: LatLng, to: LatLng): Double {
+        val url = String.format(
+            Locale.US,
+            "https://api.tomtom.com/routing/1/calculateRoute/%.6f,%.6f:%.6f,%.6f/json?traffic=true&travelMode=car&routeType=fastest&key=%s",
+            from.lat, from.lng, to.lat, to.lng, URLEncoder.encode(Prefs.tomtomKey, "UTF-8")
+        )
+        val c = URL(url).openConnection() as HttpURLConnection
+        try {
+            c.connectTimeout = 15_000
+            c.readTimeout = 30_000
+            val code = c.responseCode
+            val stream = if (code in 200..299) c.inputStream else (c.errorStream ?: c.inputStream)
+            val text = stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            if (code !in 200..299) {
+                val msg = try {
+                    JSONObject(text).optJSONObject("detailedError")?.optString("message") ?: text.take(200)
+                } catch (_: Exception) {
+                    text.take(200)
+                }
+                throw ApiException("TomTom HTTP $code: $msg")
+            }
+            val routes = JSONObject(text).optJSONArray("routes") ?: throw ApiException("TomTom rota vermedi")
+            val summary = routes.getJSONObject(0).getJSONObject("summary")
+            return summary.getDouble("travelTimeInSeconds")
+        } finally {
+            c.disconnect()
+        }
+    }
+}

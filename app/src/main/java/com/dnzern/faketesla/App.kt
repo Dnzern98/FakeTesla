@@ -32,8 +32,13 @@ object Prefs {
 
     /** Use Google (traffic, better search) instead of the free OpenStreetMap services. */
     var useGoogle: Boolean
-        get() = sp.getBoolean("use_google", BuildConfig.MAPS_API_KEY.isNotBlank())
+        get() = sp.getBoolean("use_google", false)
         set(v) = sp.edit().putBoolean("use_google", v).apply()
+
+    /** Free TomTom key for live traffic (pasted in the menu). */
+    var tomtomKey: String
+        get() = sp.getString("tomtom_key", "") ?: ""
+        set(v) = sp.edit().putString("tomtom_key", v.trim()).apply()
 
     var home: PlaceRef?
         get() = readPlace("home")

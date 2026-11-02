@@ -38,7 +38,9 @@ class Plan(
     val routePts: List<LatLng>,
     val usedElevation: Boolean,
     val chargersFound: Int,
-    val map: Bitmap?
+    val map: Bitmap?,
+    /** True when the arrival time includes live traffic (Google or TomTom). */
+    val traffic: Boolean = false
 )
 
 /** Holds the current trip plan; shared by the phone UI and Android Auto. */
@@ -103,6 +105,7 @@ object Planner {
         // 1. Route ------------------------------------------------------------------
         progress("Rota hesaplanıyor…")
         val google = Providers.google
+        var trafficS: Double? = null
         val route: GoogleApi.Route = if (google) {
             val originJson: JSONObject = when {
                 origin?.placeId != null -> GoogleApi.placeIdJson(origin.placeId)
@@ -123,7 +126,17 @@ object Planner {
             val from = origin?.latLng ?: ObdManager.currentLatLng()
                 ?: throw ApiException("Konumun alınamadı. GPS'i aç ya da başlangıç adresi yaz.")
             val to = dest.latLng ?: throw ApiException("Bu adresin konumu yok, lütfen adresi yeniden ara.")
-            FreeApi.route(from, to)
+            val r = FreeApi.route(from, to)
+            if (TomTom.enabled) {
+                progress("Trafik bilgisi alınıyor…")
+                trafficS = try {
+                    TomTom.travelTimeS(from, to)
+                } catch (e: Exception) {
+                    ObdManager.log("TomTom trafik alınamadı: ${e.message}")
+                    null
+                }
+            }
+            r
         }
 
         // 2. Points with a speed for each segment -------------------------------------
@@ -205,8 +218,9 @@ object Planner {
             cumMin[i] = cumMin[i - 1] + d / v * 60.0
         }
         // Scale times so the total matches Google's traffic-aware duration.
-        if (route.durationS > 0 && cumMin[n - 1] > 0) {
-            val k = (route.durationS / 60.0) / cumMin[n - 1]
+        val targetS = trafficS ?: route.durationS
+        if (targetS > 0 && cumMin[n - 1] > 0) {
+            val k = (targetS / 60.0) / cumMin[n - 1]
             for (i in 0 until n) cumMin[i] *= k
         }
 
@@ -398,6 +412,7 @@ object Planner {
             routePts = pts,
             usedElevation = heights != null,
             chargersFound = chargerNodes.size,
+            traffic = google || trafficS != null,
             map = null
         )
     }

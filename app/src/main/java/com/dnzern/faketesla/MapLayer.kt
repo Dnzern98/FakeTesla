@@ -22,7 +22,10 @@ import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.layers.RasterLayer
 import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.android.style.sources.RasterSource
+import org.maplibre.android.style.sources.TileSet
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
@@ -73,6 +76,16 @@ class MapController : MapCtl {
         style.addSource(stops)
         style.addSource(dest)
         style.addSource(me)
+        if (TomTom.enabled) {
+            try {
+                style.addSource(RasterSource("traffic", TileSet("2.2.0", TomTom.flowTileUrl()), 256))
+                style.addLayer(
+                    RasterLayer("traffic-layer", "traffic").withProperties(PropertyFactory.rasterOpacity(0.9f))
+                )
+            } catch (e: Exception) {
+                ObdManager.log("Trafik katmanı eklenemedi: ${e.message}")
+            }
+        }
         style.addLayer(
             LineLayer("route-casing", "route").withProperties(
                 PropertyFactory.lineColor("#163A78"),

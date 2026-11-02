@@ -12,8 +12,8 @@ android {
         applicationId = "com.dnzern.faketesla"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.7"
+        versionCode = 8
+        versionName = "0.8"
 
         // The Google key comes from the GitHub secret MAPS_API_KEY (never stored in the code).
         val mapsKey = System.getenv("MAPS_API_KEY") ?: ""

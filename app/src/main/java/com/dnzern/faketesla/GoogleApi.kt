@@ -218,6 +218,30 @@ object GoogleApi {
                 .put("searchAlongRouteParameters", JSONObject().put("polyline", JSONObject().put("encodedPolyline", encodedPolyline)))
             post(url, simple, mask)
         }
+        return parseChargers(r, minKw)
+    }
+
+    /** Fast chargers around a point (for the map), at most 20. */
+    fun nearbyChargers(center: LatLng, radiusM: Double, minKw: Int): List<Charger> {
+        val mask = "places.id,places.displayName,places.formattedAddress,places.location,places.evChargeOptions"
+        val body = JSONObject()
+            .put("includedTypes", JSONArray().put("electric_vehicle_charging_station"))
+            .put("maxResultCount", 20)
+            .put("languageCode", "tr")
+            .put(
+                "locationRestriction",
+                JSONObject().put(
+                    "circle",
+                    JSONObject()
+                        .put("center", JSONObject().put("latitude", center.lat).put("longitude", center.lng))
+                        .put("radius", radiusM.coerceIn(500.0, 50000.0))
+                )
+            )
+        val r = post("https://places.googleapis.com/v1/places:searchNearby", body, mask)
+        return parseChargers(r, minKw)
+    }
+
+    private fun parseChargers(r: JSONObject, minKw: Int): List<Charger> {
         val places = r.optJSONArray("places") ?: return emptyList()
         val out = ArrayList<Charger>()
         for (i in 0 until places.length()) {

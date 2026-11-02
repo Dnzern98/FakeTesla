@@ -55,6 +55,7 @@ object TripRepo {
     fun planTrip(origin: PlaceRef?, dest: PlaceRef, startSoc: Double) {
         if (busy.value) return
         lastDest = dest
+        Prefs.addRecent(dest)
         busy.value = true
         error.value = null
         scope.launch {
@@ -369,15 +370,6 @@ object Planner {
         }
         val totalMin = best[nn - 1][endSoc]
 
-        // 9. Map image -------------------------------------------------------------------
-        progress("Harita hazırlanıyor…")
-        val map = try {
-            GoogleApi.staticMap(pts, stops.map { it.charger.loc })
-        } catch (e: Exception) {
-            ObdManager.log("Harita resmi alınamadı: ${e.message}")
-            null
-        }
-
         return Plan(
             destName = dest.name,
             totalKm = totalKm,
@@ -391,7 +383,7 @@ object Planner {
             routePts = pts,
             usedElevation = heights != null,
             chargersFound = chargerNodes.size,
-            map = map
+            map = null
         )
     }
 }

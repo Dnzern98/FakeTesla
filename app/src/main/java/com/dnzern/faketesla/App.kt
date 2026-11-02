@@ -20,9 +20,63 @@ object Prefs {
         sp = c.getSharedPreferences("fake_tesla", Context.MODE_PRIVATE)
     }
 
-    var apiKey: String
+    /** Optional override typed in the app; empty = the key built into the app. */
+    var customApiKey: String
         get() = sp.getString("api_key", "") ?: ""
         set(v) = sp.edit().putString("api_key", v.trim()).apply()
+
+    /** The key used for Google web services. */
+    val apiKey: String
+        get() = customApiKey.ifBlank { BuildConfig.MAPS_API_KEY }
+
+    var home: PlaceRef?
+        get() = readPlace("home")
+        set(v) = writePlace("home", v)
+
+    var work: PlaceRef?
+        get() = readPlace("work")
+        set(v) = writePlace("work", v)
+
+    private fun readPlace(key: String): PlaceRef? {
+        val s = sp.getString(key, null) ?: return null
+        return try {
+            val o = org.json.JSONObject(s)
+            PlaceRef(o.getString("name"), o.optString("placeId").ifBlank { null }, null)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun writePlace(key: String, p: PlaceRef?) {
+        if (p == null) {
+            sp.edit().remove(key).apply()
+            return
+        }
+        val o = org.json.JSONObject().put("name", p.name).put("placeId", p.placeId ?: "")
+        sp.edit().putString(key, o.toString()).apply()
+    }
+
+    /** Last few destinations, newest first. */
+    fun recents(): List<PlaceRef> {
+        val s = sp.getString("recents", null) ?: return emptyList()
+        return try {
+            val a = org.json.JSONArray(s)
+            List(a.length()) {
+                val o = a.getJSONObject(it)
+                PlaceRef(o.getString("name"), o.optString("placeId").ifBlank { null }, null)
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun addRecent(p: PlaceRef) {
+        if (p.placeId == null) return
+        val list = (listOf(p) + recents().filter { it.placeId != p.placeId }).take(5)
+        val a = org.json.JSONArray()
+        for (r in list) a.put(org.json.JSONObject().put("name", r.name).put("placeId", r.placeId ?: ""))
+        sp.edit().putString("recents", a.toString()).apply()
+    }
 
     /** Minimum battery % when arriving at the destination. */
     var reservePct: Int

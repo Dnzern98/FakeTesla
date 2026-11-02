@@ -42,12 +42,14 @@ interface MapCtl {
     /** Map centre and zoom whenever the camera stops moving. */
     val idle: MutableStateFlow<Pair<LatLng, Double>?>
     val ready: MutableStateFlow<Boolean>
-    var onChargerTap: (GoogleApi.Charger) -> Unit
+    var onChargerTap: (Models.Charger) -> Unit
     fun showPlan(plan: Plan?)
-    fun showChargers(list: List<GoogleApi.Charger>)
+    fun showChargers(list: List<Models.Charger>)
     fun showMe(p: LatLng?)
     fun moveTo(p: LatLng, zoom: Double, animate: Boolean = true)
     fun fit(points: List<LatLng>, topPx: Int, bottomPx: Int, sidePx: Int)
+    /** Driving view: centred on the car, rotated to the heading, tilted. */
+    fun follow(p: LatLng, bearing: Float, zoom: Double)
 }
 
 /** MapLibre + OpenFreeMap (free, no key). */
@@ -58,11 +60,11 @@ class MapController : MapCtl {
     private var destSrc: GeoJsonSource? = null
     private var chargersSrc: GeoJsonSource? = null
     private var meSrc: GeoJsonSource? = null
-    private var chargers: List<GoogleApi.Charger> = emptyList()
+    private var chargers: List<Models.Charger> = emptyList()
 
     override val idle = MutableStateFlow<Pair<LatLng, Double>?>(null)
     override val ready = MutableStateFlow(false)
-    override var onChargerTap: (GoogleApi.Charger) -> Unit = {}
+    override var onChargerTap: (Models.Charger) -> Unit = {}
 
     fun attach(m: MapLibreMap, style: Style) {
         map = m
@@ -189,7 +191,7 @@ class MapController : MapCtl {
         destSrc?.setGeoJson(points(listOf(plan.routePts.last())))
     }
 
-    override fun showChargers(list: List<GoogleApi.Charger>) {
+    override fun showChargers(list: List<Models.Charger>) {
         chargers = list
         val features = list.map { c ->
             val f = Feature.fromGeometry(Point.fromLngLat(c.loc.lng, c.loc.lat))
@@ -210,6 +212,17 @@ class MapController : MapCtl {
     }
 
     /** Fits all points, keeping clear of the top bar and the bottom sheet (in pixels). */
+    override fun follow(p: LatLng, bearing: Float, zoom: Double) {
+        val m = map ?: return
+        val pos = org.maplibre.android.camera.CameraPosition.Builder()
+            .target(p.m())
+            .zoom(zoom)
+            .bearing(bearing.toDouble())
+            .tilt(45.0)
+            .build()
+        m.animateCamera(CameraUpdateFactory.newCameraPosition(pos), 900)
+    }
+
     override fun fit(points: List<LatLng>, topPx: Int, bottomPx: Int, sidePx: Int) {
         val m = map ?: return
         if (points.size < 2) return

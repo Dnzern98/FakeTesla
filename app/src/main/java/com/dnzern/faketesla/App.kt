@@ -21,20 +21,6 @@ object Prefs {
         sp = c.getSharedPreferences("fake_tesla", Context.MODE_PRIVATE)
     }
 
-    /** Optional override typed in the app; empty = the key built into the app. */
-    var customApiKey: String
-        get() = sp.getString("api_key", "") ?: ""
-        set(v) = sp.edit().putString("api_key", v.trim()).apply()
-
-    /** The key used for Google web services. */
-    val apiKey: String
-        get() = customApiKey.ifBlank { BuildConfig.MAPS_API_KEY }
-
-    /** Use Google (traffic, better search) instead of the free OpenStreetMap services. */
-    var useGoogle: Boolean
-        get() = sp.getBoolean("use_google", false)
-        set(v) = sp.edit().putBoolean("use_google", v).apply()
-
     /** Free TomTom key for live traffic (pasted in the menu). */
     var tomtomKey: String
         get() = sp.getString("tomtom_key", "") ?: ""

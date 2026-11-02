@@ -84,7 +84,7 @@ fun SearchScreen(mode: SearchMode, onBack: () -> Unit, onPicked: (PlaceRef?, Pla
     var originText by remember { mutableStateOf("") }
     var destText by remember { mutableStateOf("") }
     var active by remember { mutableStateOf(Field.Dest) }
-    var suggestions by remember { mutableStateOf<List<GoogleApi.Suggestion>>(emptyList()) }
+    var suggestions by remember { mutableStateOf<List<Models.Suggestion>>(emptyList()) }
     var searchError by remember { mutableStateOf<String?>(null) }
     var manualSoc by remember { mutableFloatStateOf(Prefs.manualSoc.toFloat()) }
     val destFocus = remember { FocusRequester() }
@@ -117,7 +117,7 @@ fun SearchScreen(mode: SearchMode, onBack: () -> Unit, onPicked: (PlaceRef?, Pla
         }
     }
 
-    fun pick(s: GoogleApi.Suggestion) {
+    fun pick(s: Models.Suggestion) {
         val full = if (s.secondary.isNotBlank()) "${s.main}, ${s.secondary}" else s.main
         val ref = PlaceRef(full, s.placeId.ifBlank { null }, s.latLng)
         if (active == Field.Origin) {
@@ -361,6 +361,7 @@ fun PlanScreen(onBack: () -> Unit, onStart: (Plan) -> Unit, onReplan: () -> Unit
 
 @Composable
 private fun PlanContent(p: Plan, onStart: (Plan) -> Unit, onReplan: () -> Unit) {
+    var showList by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
         Column(Modifier.weight(1f)) {
             Text("${p.destName.substringBefore(", ")} · varış", color = Pal.Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -411,6 +412,45 @@ private fun PlanContent(p: Plan, onStart: (Plan) -> Unit, onReplan: () -> Unit) 
             detail = null,
             last = true
         )
+    }
+
+    if (p.routeChargers.isNotEmpty()) {
+        Text(
+            if (showList) "Yol üstündeki istasyonları gizle" else "Yol üstündeki hızlı şarj istasyonları (${p.routeChargers.size})",
+            color = Pal.Blue,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier
+                .clickable(role = Role.Button) { showList = !showList }
+                .padding(vertical = 6.dp)
+        )
+        if (showList) {
+            for (rc in p.routeChargers) {
+                val chosen = p.stops.any { it.charger.id == rc.charger.id }
+                val power = when {
+                    rc.charger.maxKw > 0 -> "${rc.charger.maxKw.roundToInt()} kW"
+                    rc.charger.dcKnown -> "hızlı · güç bilinmiyor"
+                    else -> "güç bilinmiyor"
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (chosen) Pal.GreenDark else Pal.Surface2)
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(rc.charger.name, color = Pal.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            "km ${rc.alongKm.roundToInt()} · $power · yoldan ${fmt(rc.offsetKm, 1, "km")}" + if (chosen) " · planda" else "",
+                            color = Pal.Muted,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
+        }
     }
 
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -735,11 +775,8 @@ fun MenuScreen(onBack: () -> Unit, onCar: () -> Unit, onSetHome: () -> Unit, onS
     var maxCharge by remember { mutableFloatStateOf(Prefs.maxChargePct.toFloat()) }
     var minKw by remember { mutableFloatStateOf(Prefs.minChargerKw.toFloat()) }
     var factor by remember { mutableFloatStateOf(Prefs.consumptionFactor) }
-    var key by remember { mutableStateOf(Prefs.customApiKey) }
-    var useGoogle by remember { mutableStateOf(Prefs.useGoogle) }
     var tomtom by remember { mutableStateOf(Prefs.tomtomKey) }
     var tomtomSaved by remember { mutableStateOf(false) }
-    var keySaved by remember { mutableStateOf(false) }
 
     Column(
         Modifier
@@ -827,48 +864,6 @@ fun MenuScreen(onBack: () -> Unit, onCar: () -> Unit, onSetHome: () -> Unit, onS
                     OutlineButton(if (tomtomSaved) "Kaydedildi · haritayı görmek için uygulamayı yeniden aç" else "TomTom anahtarını kaydet", Modifier.fillMaxWidth()) {
                         Prefs.tomtomKey = tomtom
                         tomtomSaved = true
-                    }
-                }
-                Divider()
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Google servislerini kullan", color = Pal.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                            Text(
-                                "Google faturalandırması aktifse aç: harita, arama ve rota Google'dan gelir. " +
-                                    "Kapalıyken ücretsiz OpenStreetMap servisleri ve (girdiysen) TomTom trafiği kullanılır.",
-                                color = Pal.Muted,
-                                fontSize = 13.sp
-                            )
-                        }
-                        Spacer(Modifier.width(12.dp))
-                        Switch(checked = useGoogle, onCheckedChange = {
-                            useGoogle = it
-                            Prefs.useGoogle = it
-                        })
-                    }
-                    Text("Google API anahtarı", color = Pal.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        if (BuildConfig.MAPS_API_KEY.isNotBlank()) "Gömülü anahtar var (${BuildConfig.MAPS_API_KEY.take(8)}…). Farklı bir anahtar istersen buraya yaz."
-                        else "Uygulamada gömülü anahtar yok. Google'ı kullanmak istersen anahtarını buraya yaz.",
-                        color = Pal.Muted,
-                        fontSize = 13.sp
-                    )
-                    TextField(
-                        value = key,
-                        onValueChange = {
-                            key = it
-                            keySaved = false
-                        },
-                        placeholder = { Text("Boş = gömülü anahtar") },
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = fieldColors(),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlineButton(if (keySaved) "Kaydedildi" else "Anahtarı kaydet", Modifier.fillMaxWidth()) {
-                        Prefs.customApiKey = key
-                        keySaved = true
                     }
                 }
             }

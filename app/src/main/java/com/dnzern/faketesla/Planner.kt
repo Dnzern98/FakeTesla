@@ -7,7 +7,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.util.PriorityQueue
 import kotlin.math.cos
 import kotlin.math.floor
@@ -16,7 +15,7 @@ import kotlin.math.min
 class PlaceRef(val name: String, val placeId: String?, val latLng: LatLng?)
 
 class Stop(
-    val charger: GoogleApi.Charger,
+    val charger: Models.Charger,
     val alongKm: Double,
     val arriveSoc: Int,
     val departSoc: Int,
@@ -39,9 +38,21 @@ class Plan(
     val usedElevation: Boolean,
     val chargersFound: Int,
     val map: Bitmap?,
-    /** True when the arrival time includes live traffic (Google or TomTom). */
-    val traffic: Boolean = false
+    /** True when the arrival time includes live traffic (TomTom). */
+    val traffic: Boolean = false,
+    /** Distance, drive minutes and battery Wh from the start to each route point (for navigation). */
+    val cumKm: DoubleArray = DoubleArray(0),
+    val cumMin: DoubleArray = DoubleArray(0),
+    val cumWh: DoubleArray = DoubleArray(0),
+    /** Turn instructions, each tied to a route point index. */
+    val steps: List<NavStep> = emptyList(),
+    /** Every usable fast charger near the route, in route order. */
+    val routeChargers: List<RouteCharger> = emptyList()
 )
+
+class NavStep(val idx: Int, val text: String, val voice: String)
+
+class RouteCharger(val charger: Models.Charger, val alongKm: Double, val offsetKm: Double, val kw: Double)
 
 /** Holds the current trip plan; shared by the phone UI and Android Auto. */
 object TripRepo {
@@ -90,7 +101,7 @@ object Planner {
 
     private class Node(
         val idx: Int,
-        val charger: GoogleApi.Charger?,
+        val charger: Models.Charger?,
         val halfDetourMin: Double,
         val halfDetourWh: Double,
         val kw: Double
@@ -104,25 +115,8 @@ object Planner {
 
         // 1. Route ------------------------------------------------------------------
         progress("Rota hesaplanıyor…")
-        val google = Providers.google
         var trafficS: Double? = null
-        val route: GoogleApi.Route = if (google) {
-            val originJson: JSONObject = when {
-                origin?.placeId != null -> GoogleApi.placeIdJson(origin.placeId)
-                origin?.latLng != null -> GoogleApi.latLngJson(origin.latLng)
-                else -> {
-                    val here = ObdManager.currentLatLng()
-                        ?: throw ApiException("Konumun alınamadı. GPS'i aç ya da başlangıç adresi yaz.")
-                    GoogleApi.latLngJson(here)
-                }
-            }
-            val destJson: JSONObject = when {
-                dest.placeId != null -> GoogleApi.placeIdJson(dest.placeId)
-                dest.latLng != null -> GoogleApi.latLngJson(dest.latLng)
-                else -> throw ApiException("Hedef seçilmedi")
-            }
-            GoogleApi.computeRoute(originJson, destJson)
-        } else {
+        val route: Models.Route = run {
             val from = origin?.latLng ?: ObdManager.currentLatLng()
                 ?: throw ApiException("Konumun alınamadı. GPS'i aç ya da başlangıç adresi yaz.")
             val to = dest.latLng ?: throw ApiException("Bu adresin konumu yok, lütfen adresi yeniden ara.")
@@ -189,7 +183,7 @@ object Planner {
                 sampleIdx[s] = j
             }
             val samplePts = sampleIdx.map { pts[it] }
-            val h = if (google) GoogleApi.elevations(samplePts) else FreeApi.heights(samplePts)
+            val h = FreeApi.heights(samplePts)
             val out = DoubleArray(n)
             var s = 0
             for (i in 0 until n) {
@@ -217,7 +211,7 @@ object Planner {
             cumWh[i] = cumWh[i - 1] + wh
             cumMin[i] = cumMin[i - 1] + d / v * 60.0
         }
-        // Scale times so the total matches Google's traffic-aware duration.
+        // Scale times so the total matches the traffic-aware (TomTom) or routed duration.
         val targetS = trafficS ?: route.durationS
         if (targetS > 0 && cumMin[n - 1] > 0) {
             val k = (targetS / 60.0) / cumMin[n - 1]
@@ -226,9 +220,9 @@ object Planner {
 
         // 5. Chargers along the route (only if we may need one) -----------------------
         val needsCharge = startSoc - cumWh[n - 1] / PCT_WH < reserve
-        val found = LinkedHashMap<String, GoogleApi.Charger>()
+        val found = LinkedHashMap<String, Models.Charger>()
         var lastErr: Exception? = null
-        if (needsCharge) {
+        if (true) {
             var startKm = 0.0
             var chunk = 1
             val chunks = kotlin.math.ceil(totalKm / CHUNK_KM).toInt().coerceAtLeast(1)
@@ -239,11 +233,7 @@ object Planner {
                 for (i in 0 until n) if (cumKm[i] >= startKm - 2 && cumKm[i] <= endKm + 2) seg.add(pts[i])
                 if (seg.size >= 2) {
                     try {
-                        val list = if (google) {
-                            GoogleApi.chargersAlong(Geo.encode(Geo.thin(seg, 150)), minKw)
-                        } else {
-                            FreeApi.chargersAlong(Geo.thin(seg, 80), 1500, minKw)
-                        }
+                        val list = FreeApi.chargersAlong(Geo.thin(seg, 80), 1500, minKw)
                         for (c in list) {
                             if (c.id.isNotBlank() && !found.containsKey(c.id)) found[c.id] = c
                         }
@@ -255,7 +245,8 @@ object Planner {
                 chunk++
             }
             if (found.isEmpty() && lastErr != null) {
-                throw ApiException("Şarj istasyonları alınamadı: ${lastErr.message}")
+                if (needsCharge) throw ApiException("Şarj istasyonları alınamadı: ${lastErr.message}")
+                ObdManager.log("Şarj istasyonları alınamadı: ${lastErr.message}")
             }
         }
 
@@ -264,6 +255,7 @@ object Planner {
         val nodes = ArrayList<Node>()
         nodes.add(Node(0, null, 0.0, 0.0, 0.0))
         val chargerNodes = ArrayList<Node>()
+        val routeChargers = ArrayList<RouteCharger>()
         for (c in found.values) {
             var bestI = 0
             var bestD = Double.MAX_VALUE
@@ -284,7 +276,9 @@ object Planner {
             // Unknown power: assume the minimum if it surely has a fast plug, else a slow 22 kW.
             val kw = if (c.maxKw > 0) c.maxKw else if (c.dcKnown) minKw.toDouble() else 22.0
             chargerNodes.add(Node(bestI, c, halfMin, halfWh, kw))
+            routeChargers.add(RouteCharger(c, cumKm[bestI], offsetKm, kw))
         }
+        routeChargers.sortBy { it.alongKm }
         chargerNodes.sortBy { it.idx }
         nodes.addAll(chargerNodes)
         nodes.add(Node(n - 1, null, 0.0, 0.0, 0.0))
@@ -399,6 +393,26 @@ object Planner {
         }
         val totalMin = best[nn - 1][endSoc]
 
+        // Turn instructions: tie each maneuver to the nearest route point, moving forward only.
+        val steps = ArrayList<NavStep>()
+        var from = 0
+        for (m in route.maneuvers) {
+            var bestI = from
+            var bestD = Double.MAX_VALUE
+            val end = min(n - 1, from + 4000)
+            for (i in from..end) {
+                val d = Geo.dist(pts[i], m.loc)
+                if (d < bestD) {
+                    bestD = d
+                    bestI = i
+                }
+            }
+            if (bestD < 300) {
+                steps.add(NavStep(bestI, m.text, m.voice.ifBlank { m.text }))
+                from = bestI
+            }
+        }
+
         return Plan(
             destName = dest.name,
             totalKm = totalKm,
@@ -412,7 +426,12 @@ object Planner {
             routePts = pts,
             usedElevation = heights != null,
             chargersFound = chargerNodes.size,
-            traffic = google || trafficS != null,
+            traffic = trafficS != null,
+            cumKm = cumKm,
+            cumMin = cumMin,
+            cumWh = cumWh,
+            steps = steps,
+            routeChargers = routeChargers,
             map = null
         )
     }

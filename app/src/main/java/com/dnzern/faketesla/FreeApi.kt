@@ -55,12 +55,12 @@ object FreeApi {
 
     // ---------------------------------------------------------------- Photon search
 
-    fun search(query: String, bias: LatLng?): List<GoogleApi.Suggestion> {
+    fun search(query: String, bias: LatLng?): List<Models.Suggestion> {
         val sb = StringBuilder("https://photon.komoot.io/api/?limit=8&q=").append(enc(query))
         if (bias != null) sb.append("&lat=").append(bias.lat).append("&lon=").append(bias.lng)
         val j = JSONObject(request(sb.toString(), "GET", null, ""))
         val features = j.optJSONArray("features") ?: return emptyList()
-        val out = ArrayList<GoogleApi.Suggestion>()
+        val out = ArrayList<Models.Suggestion>()
         for (i in 0 until features.length()) {
             val f = features.getJSONObject(i)
             val coords = f.optJSONObject("geometry")?.optJSONArray("coordinates") ?: continue
@@ -75,14 +75,14 @@ object FreeApi {
                 if (v.isNotBlank() && v != main && !parts.contains(v)) parts.add(v)
             }
             val ll = LatLng(coords.getDouble(1), coords.getDouble(0))
-            out.add(GoogleApi.Suggestion("", main, parts.take(3).joinToString(", "), ll))
+            out.add(Models.Suggestion("", main, parts.take(3).joinToString(", "), ll))
         }
         return out
     }
 
     // ---------------------------------------------------------------- Valhalla routing
 
-    fun route(from: LatLng, to: LatLng): GoogleApi.Route {
+    fun route(from: LatLng, to: LatLng): Models.Route {
         val body = JSONObject()
             .put(
                 "locations",
@@ -96,7 +96,8 @@ object FreeApi {
         val j = JSONObject(request("$VALHALLA/route", "POST", body.toString(), "application/json"))
         val trip = j.optJSONObject("trip") ?: throw ApiException("Rota bulunamadı")
         val legs = trip.optJSONArray("legs") ?: throw ApiException("Rota bulunamadı")
-        val steps = ArrayList<GoogleApi.Step>()
+        val steps = ArrayList<Models.Step>()
+        val maneuvers = ArrayList<Models.Maneuver>()
         val all = ArrayList<LatLng>()
         for (i in 0 until legs.length()) {
             val leg = legs.getJSONObject(i)
@@ -106,10 +107,15 @@ object FreeApi {
             for (k in 0 until mans.length()) {
                 val m = mans.getJSONObject(k)
                 val a = m.optInt("begin_shape_index", 0).coerceIn(0, maxOf(0, pts.size - 1))
+                val text = m.optString("instruction")
+                if (text.isNotBlank() && pts.isNotEmpty()) {
+                    val voice = m.optString("verbal_pre_transition_instruction").ifBlank { text }
+                    maneuvers.add(Models.Maneuver(pts[a], text, voice))
+                }
                 val b = m.optInt("end_shape_index", a).coerceIn(a, maxOf(0, pts.size - 1))
                 if (b <= a) continue
                 steps.add(
-                    GoogleApi.Step(
+                    Models.Step(
                         (m.optDouble("length", 0.0) * 1000.0).toInt(),
                         m.optDouble("time", 0.0),
                         Geo.encode(pts.subList(a, b + 1))
@@ -119,12 +125,13 @@ object FreeApi {
         }
         val summary = trip.optJSONObject("summary") ?: JSONObject()
         val time = summary.optDouble("time", 0.0)
-        return GoogleApi.Route(
+        return Models.Route(
             (summary.optDouble("length", 0.0) * 1000.0).toInt(),
             time,
             time,
             Geo.encode(all),
-            steps
+            steps,
+            maneuvers
         )
     }
 
@@ -141,11 +148,11 @@ object FreeApi {
 
     // ---------------------------------------------------------------- Overpass chargers
 
-    private fun overpass(filter: String, minKw: Int): List<GoogleApi.Charger> {
+    private fun overpass(filter: String, minKw: Int): List<Models.Charger> {
         val q = "[out:json][timeout:25];nwr[\"amenity\"=\"charging_station\"]$filter;out center tags;"
         val text = request(OVERPASS, "POST", "data=" + enc(q), "application/x-www-form-urlencoded")
         val els = JSONObject(text).optJSONArray("elements") ?: return emptyList()
-        val out = ArrayList<GoogleApi.Charger>()
+        val out = ArrayList<Models.Charger>()
         for (i in 0 until els.length()) {
             val e = els.getJSONObject(i)
             val tags = e.optJSONObject("tags") ?: JSONObject()
@@ -185,7 +192,7 @@ object FreeApi {
                 tags.optString("addr:city").takeIf { it.isNotBlank() }
             ).filterNotNull().joinToString(" · ")
             out.add(
-                GoogleApi.Charger(
+                Models.Charger(
                     id = "osm-${e.optString("type")}-${e.optLong("id")}",
                     name = name,
                     address = addr,
@@ -212,30 +219,26 @@ object FreeApi {
     }
 
     /** Stations within [radiusM] of a line through [points] (keep it under ~100 points). */
-    fun chargersAlong(points: List<LatLng>, radiusM: Int, minKw: Int): List<GoogleApi.Charger> {
+    fun chargersAlong(points: List<LatLng>, radiusM: Int, minKw: Int): List<Models.Charger> {
         val coords = points.joinToString(",") {
             String.format(Locale.US, "%.5f,%.5f", it.lat, it.lng)
         }
         return overpass("(around:$radiusM,$coords)", minKw)
     }
 
-    fun nearbyChargers(center: LatLng, radiusM: Double, minKw: Int): List<GoogleApi.Charger> {
+    fun nearbyChargers(center: LatLng, radiusM: Double, minKw: Int): List<Models.Charger> {
         val r = radiusM.coerceIn(500.0, 30000.0).toInt()
         val c = String.format(Locale.US, "%.5f,%.5f", center.lat, center.lng)
         return overpass("(around:$r,$c)", minKw).take(60)
     }
 }
 
-/** Picks Google (needs a working key, has traffic) or the free services. */
+/** The services the app uses for search and nearby stations. */
 object Providers {
-    val google: Boolean
-        get() = Prefs.useGoogle && Prefs.apiKey.isNotBlank()
+    fun search(query: String, bias: LatLng?): List<Models.Suggestion> = FreeApi.search(query, bias)
 
-    fun search(query: String, bias: LatLng?): List<GoogleApi.Suggestion> =
-        if (google) GoogleApi.autocomplete(query, bias) else FreeApi.search(query, bias)
-
-    fun nearbyChargers(center: LatLng, radiusM: Double, minKw: Int): List<GoogleApi.Charger> =
-        if (google) GoogleApi.nearbyChargers(center, radiusM, minKw) else FreeApi.nearbyChargers(center, radiusM, minKw)
+    fun nearbyChargers(center: LatLng, radiusM: Double, minKw: Int): List<Models.Charger> =
+        FreeApi.nearbyChargers(center, radiusM, minKw)
 }
 
 /**

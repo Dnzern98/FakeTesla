@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Pal.Blue, background = Pal.Bg, surface = Pal.Surface)) {
-                Root(onShare = { shareLog() }, onOpenMaps = { openInGoogleMaps(it) })
+                Root(onShare = { shareLog() })
             }
         }
     }
@@ -101,25 +101,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Hands the route to Google Maps navigation with the charging stops as waypoints. */
-    private fun openInGoogleMaps(plan: Plan) {
-        val dest = plan.routePts.lastOrNull() ?: return
-        val sb = StringBuilder("https://www.google.com/maps/dir/?api=1&travelmode=driving&dir_action=navigate")
-        sb.append("&destination=").append(Uri.encode(dest.str()))
-        if (plan.stops.isNotEmpty()) {
-            sb.append("&waypoints=").append(Uri.encode(plan.stops.joinToString("|") { it.charger.loc.str() }))
-        }
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(sb.toString()))
-        try {
-            startActivity(Intent(intent).setPackage("com.google.android.apps.maps"))
-        } catch (e: Exception) {
-            try {
-                startActivity(intent)
-            } catch (e2: Exception) {
-                ObdManager.log("Google Haritalar açılamadı: ${e2.message}")
-            }
-        }
-    }
 }
 
 fun requiredPermissions(): Array<String> {
@@ -140,7 +121,7 @@ fun hasLocationPermission(c: Context): Boolean =
     ContextCompat.checkSelfPermission(c, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
         ContextCompat.checkSelfPermission(c, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
-enum class Screen { Home, Search, Plan, Car, Menu }
+enum class Screen { Home, Search, Plan, Nav, Car, Menu }
 
 enum class SearchMode { Trip, SetHome, SetWork }
 
@@ -149,14 +130,14 @@ fun planningSoc(): Double =
     (if (ObdManager.connected.value) ObdManager.socNow() else null) ?: Prefs.manualSoc.toDouble()
 
 @Composable
-fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
+fun Root(onShare: () -> Unit) {
     val context = LocalContext.current
     val density = LocalDensity.current
 
     var screen by remember { mutableStateOf(Screen.Home) }
     var searchMode by remember { mutableStateOf(SearchMode.Trip) }
     var searchReturn by remember { mutableStateOf(Screen.Home) }
-    var selected by remember { mutableStateOf<GoogleApi.Charger?>(null) }
+    var selected by remember { mutableStateOf<Models.Charger?>(null) }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         ObdManager.startLocation()
@@ -166,17 +147,15 @@ fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
     val plan by TripRepo.plan.collectAsState()
     val location by ObdManager.location.collectAsState()
 
-    // Google map when the built-in key is there and Google is switched on; otherwise the free map.
-    val googleOn = remember(screen) { Providers.google && BuildConfig.MAPS_API_KEY.isNotBlank() }
-    val controller: MapCtl = remember(googleOn) { if (googleOn) GoogleMapController() else MapController() }
+    val controller = remember { MapController() }
     val ready by controller.ready.collectAsState()
     val idle by controller.idle.collectAsState()
     var centeredOnce by remember(controller) { mutableStateOf(false) }
     var showChargers by remember { mutableStateOf(true) }
-    var chargers by remember { mutableStateOf<List<GoogleApi.Charger>>(emptyList()) }
+    var chargers by remember { mutableStateOf<List<Models.Charger>>(emptyList()) }
     var lastFetch by remember(controller) { mutableStateOf<LatLng?>(null) }
 
-    fun refOf(c: GoogleApi.Charger) = PlaceRef(c.name, c.id.takeIf { it.isNotBlank() && !it.startsWith("osm-") }, c.loc)
+    fun refOf(c: Models.Charger) = PlaceRef(c.name, c.id.takeIf { it.isNotBlank() && !it.startsWith("osm-") }, c.loc)
 
     fun startPlan(origin: PlaceRef?, dest: PlaceRef) {
         selected = null
@@ -204,9 +183,12 @@ fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
     LaunchedEffect(ready, plan, screen, controller) {
         if (!ready) return@LaunchedEffect
         val p = plan
-        if (screen == Screen.Plan && p != null) {
+        if (screen == Screen.Nav && p != null) {
             controller.showPlan(p)
-            controller.showChargers(emptyList())
+            controller.showChargers(p.routeChargers.map { it.charger })
+        } else if (screen == Screen.Plan && p != null) {
+            controller.showPlan(p)
+            controller.showChargers(p.routeChargers.map { it.charger })
             with(density) {
                 controller.fit(p.routePts, 140.dp.roundToPx(), 470.dp.roundToPx(), 40.dp.roundToPx())
             }
@@ -238,6 +220,10 @@ fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
     }
 
     BackHandler(enabled = screen != Screen.Home || selected != null) {
+        if (screen == Screen.Nav) {
+            screen = Screen.Plan
+            return@BackHandler
+        }
         if (selected != null && screen == Screen.Home) {
             selected = null
         } else {
@@ -250,7 +236,7 @@ fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
             .fillMaxSize()
             .background(Pal.Bg)
     ) {
-        if (controller is GoogleMapController) GoogleMapLayer(controller) else MapLayer(controller as MapController)
+        MapLayer(controller)
 
         when (screen) {
             Screen.Home -> HomeOverlay(
@@ -329,12 +315,14 @@ fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
                     TripRepo.clear()
                     screen = Screen.Home
                 },
-                onStart = onOpenMaps,
+                onStart = { screen = Screen.Nav },
                 onReplan = {
                     val d = TripRepo.lastDest
                     if (d != null) TripRepo.planTrip(null, d, planningSoc())
                 }
             )
+
+            Screen.Nav -> NavScreen(controller, onEnd = { screen = Screen.Plan })
 
             Screen.Car -> CarScreen(onBack = { screen = Screen.Home }, onShare = onShare)
 
@@ -361,9 +349,9 @@ fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
 fun HomeOverlay(
     plan: Plan?,
     chargersOn: Boolean,
-    selected: GoogleApi.Charger?,
+    selected: Models.Charger?,
     onCloseSelected: () -> Unit,
-    onGoSelected: (GoogleApi.Charger) -> Unit,
+    onGoSelected: (Models.Charger) -> Unit,
     onSearch: () -> Unit,
     onMenu: () -> Unit,
     onCar: () -> Unit,

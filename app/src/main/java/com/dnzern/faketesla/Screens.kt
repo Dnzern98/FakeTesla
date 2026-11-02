@@ -806,8 +806,8 @@ fun MenuScreen(onBack: () -> Unit, onCar: () -> Unit, onSetHome: () -> Unit, onS
                         Column(Modifier.weight(1f)) {
                             Text("Google servislerini kullan", color = Pal.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                             Text(
-                                "Kapalıyken ücretsiz OpenStreetMap servisleri kullanılır (anahtar gerekmez, trafik yok). " +
-                                    "Açıkken arama ve rota Google'dan gelir, varış saati trafiğe göre hesaplanır.",
+                                "Açıkken harita, trafik, arama ve rota Google'dan gelir. " +
+                                    "Kapalıyken ücretsiz OpenStreetMap servisleri kullanılır (trafik yok). Google'da sorun olursa kapat.",
                                 color = Pal.Muted,
                                 fontSize = 13.sp
                             )

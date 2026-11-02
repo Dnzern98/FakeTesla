@@ -32,7 +32,7 @@ object Prefs {
 
     /** Use Google (traffic, better search) instead of the free OpenStreetMap services. */
     var useGoogle: Boolean
-        get() = sp.getBoolean("use_google", false)
+        get() = sp.getBoolean("use_google", BuildConfig.MAPS_API_KEY.isNotBlank())
         set(v) = sp.edit().putBoolean("use_google", v).apply()
 
     var home: PlaceRef?

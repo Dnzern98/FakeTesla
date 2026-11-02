@@ -31,32 +31,24 @@ import org.maplibre.android.geometry.LatLng as MLatLng
 
 fun LatLng.m(): MLatLng = MLatLng(lat, lng)
 
-/** Dark OpenStreetMap tiles from CARTO; no key needed. */
-private const val STYLE_JSON = """
-{
-  "version": 8,
-  "sources": {
-    "carto": {
-      "type": "raster",
-      "tiles": [
-        "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-        "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-        "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png"
-      ],
-      "tileSize": 256,
-      "maxzoom": 19,
-      "attribution": "© OpenStreetMap katkıcıları © CARTO"
-    }
-  },
-  "layers": [
-    {"id": "bg", "type": "background", "paint": {"background-color": "#1a1d21"}},
-    {"id": "carto", "type": "raster", "source": "carto"}
-  ]
-}
-"""
+/** OpenFreeMap dark vector style: free, no key, OpenStreetMap data. */
+private const val STYLE_URL = "https://tiles.openfreemap.org/styles/dark"
 
-/** Lets the screens move the camera and receive map events. */
-class MapController {
+/** What the screens can do with a map, whichever engine draws it. */
+interface MapCtl {
+    /** Map centre and zoom whenever the camera stops moving. */
+    val idle: MutableStateFlow<Pair<LatLng, Double>?>
+    val ready: MutableStateFlow<Boolean>
+    var onChargerTap: (GoogleApi.Charger) -> Unit
+    fun showPlan(plan: Plan?)
+    fun showChargers(list: List<GoogleApi.Charger>)
+    fun showMe(p: LatLng?)
+    fun moveTo(p: LatLng, zoom: Double, animate: Boolean = true)
+    fun fit(points: List<LatLng>, topPx: Int, bottomPx: Int, sidePx: Int)
+}
+
+/** MapLibre + OpenFreeMap (free, no key). */
+class MapController : MapCtl {
     private var map: MapLibreMap? = null
     private var routeSrc: GeoJsonSource? = null
     private var stopsSrc: GeoJsonSource? = null
@@ -65,10 +57,9 @@ class MapController {
     private var meSrc: GeoJsonSource? = null
     private var chargers: List<GoogleApi.Charger> = emptyList()
 
-    /** Map centre and zoom whenever the camera stops moving. */
-    val idle = MutableStateFlow<Pair<LatLng, Double>?>(null)
-    val ready = MutableStateFlow(false)
-    var onChargerTap: (GoogleApi.Charger) -> Unit = {}
+    override val idle = MutableStateFlow<Pair<LatLng, Double>?>(null)
+    override val ready = MutableStateFlow(false)
+    override var onChargerTap: (GoogleApi.Charger) -> Unit = {}
 
     fun attach(m: MapLibreMap, style: Style) {
         map = m
@@ -172,7 +163,7 @@ class MapController {
 
     private val empty: FeatureCollection get() = FeatureCollection.fromFeatures(emptyList<Feature>())
 
-    fun showPlan(plan: Plan?) {
+    override fun showPlan(plan: Plan?) {
         if (plan == null || plan.routePts.size < 2) {
             routeSrc?.setGeoJson(empty)
             stopsSrc?.setGeoJson(empty)
@@ -185,7 +176,7 @@ class MapController {
         destSrc?.setGeoJson(points(listOf(plan.routePts.last())))
     }
 
-    fun showChargers(list: List<GoogleApi.Charger>) {
+    override fun showChargers(list: List<GoogleApi.Charger>) {
         chargers = list
         val features = list.map { c ->
             val f = Feature.fromGeometry(Point.fromLngLat(c.loc.lng, c.loc.lat))
@@ -195,18 +186,18 @@ class MapController {
         chargersSrc?.setGeoJson(FeatureCollection.fromFeatures(features))
     }
 
-    fun showMe(p: LatLng?) {
+    override fun showMe(p: LatLng?) {
         meSrc?.setGeoJson(if (p == null) empty else points(listOf(p)))
     }
 
-    fun moveTo(p: LatLng, zoom: Double, animate: Boolean = true) {
+    override fun moveTo(p: LatLng, zoom: Double, animate: Boolean) {
         val m = map ?: return
         val u = CameraUpdateFactory.newLatLngZoom(p.m(), zoom)
         if (animate) m.animateCamera(u, 800) else m.moveCamera(u)
     }
 
     /** Fits all points, keeping clear of the top bar and the bottom sheet (in pixels). */
-    fun fit(points: List<LatLng>, topPx: Int, bottomPx: Int, sidePx: Int) {
+    override fun fit(points: List<LatLng>, topPx: Int, bottomPx: Int, sidePx: Int) {
         val m = map ?: return
         if (points.size < 2) return
         val b = LatLngBounds.Builder()
@@ -246,7 +237,7 @@ fun MapLayer(controller: MapController) {
 
     LaunchedEffect(mapView) {
         mapView.getMapAsync { m ->
-            m.setStyle(Style.Builder().fromJson(STYLE_JSON)) { style ->
+            m.setStyle(Style.Builder().fromUri(STYLE_URL)) { style ->
                 controller.attach(m, style)
             }
         }

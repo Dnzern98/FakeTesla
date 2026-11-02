@@ -166,13 +166,15 @@ fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
     val plan by TripRepo.plan.collectAsState()
     val location by ObdManager.location.collectAsState()
 
-    val controller = remember { MapController() }
+    // Google map when the built-in key is there and Google is switched on; otherwise the free map.
+    val googleOn = remember(screen) { Providers.google && BuildConfig.MAPS_API_KEY.isNotBlank() }
+    val controller: MapCtl = remember(googleOn) { if (googleOn) GoogleMapController() else MapController() }
     val ready by controller.ready.collectAsState()
     val idle by controller.idle.collectAsState()
-    var centeredOnce by remember { mutableStateOf(false) }
+    var centeredOnce by remember(controller) { mutableStateOf(false) }
     var showChargers by remember { mutableStateOf(true) }
     var chargers by remember { mutableStateOf<List<GoogleApi.Charger>>(emptyList()) }
-    var lastFetch by remember { mutableStateOf<LatLng?>(null) }
+    var lastFetch by remember(controller) { mutableStateOf<LatLng?>(null) }
 
     fun refOf(c: GoogleApi.Charger) = PlaceRef(c.name, c.id.takeIf { it.isNotBlank() && !it.startsWith("osm-") }, c.loc)
 
@@ -185,10 +187,10 @@ fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
     controller.onChargerTap = { c -> selected = c }
 
     // Start over Istanbul, then jump to the user once a position arrives.
-    LaunchedEffect(ready) {
+    LaunchedEffect(ready, controller) {
         if (ready) controller.moveTo(LatLng(41.015, 28.979), 10.0, animate = false)
     }
-    LaunchedEffect(ready, location) {
+    LaunchedEffect(ready, location, controller) {
         val l = location ?: return@LaunchedEffect
         if (!ready) return@LaunchedEffect
         controller.showMe(LatLng(l.latitude, l.longitude))
@@ -199,7 +201,7 @@ fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
     }
 
     // Route, stops and destination on the map only while the plan screen is open.
-    LaunchedEffect(ready, plan, screen) {
+    LaunchedEffect(ready, plan, screen, controller) {
         if (!ready) return@LaunchedEffect
         val p = plan
         if (screen == Screen.Plan && p != null) {
@@ -248,7 +250,7 @@ fun Root(onShare: () -> Unit, onOpenMaps: (Plan) -> Unit) {
             .fillMaxSize()
             .background(Pal.Bg)
     ) {
-        MapLayer(controller)
+        if (controller is GoogleMapController) GoogleMapLayer(controller) else MapLayer(controller as MapController)
 
         when (screen) {
             Screen.Home -> HomeOverlay(

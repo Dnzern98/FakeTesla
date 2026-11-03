@@ -47,10 +47,16 @@ class Plan(
     /** Turn instructions, each tied to a route point index. */
     val steps: List<NavStep> = emptyList(),
     /** Every usable fast charger near the route, in route order. */
-    val routeChargers: List<RouteCharger> = emptyList()
+    val routeChargers: List<RouteCharger> = emptyList(),
+    /** Speed limit changes: route point index → km/h (0 = unknown). */
+    val limits: List<Pair<Int, Int>> = emptyList(),
+    /** Route point indexes of fixed speed cameras. */
+    val cameras: List<Int> = emptyList(),
+    val hasToll: Boolean = false,
+    val hasFerry: Boolean = false
 )
 
-class NavStep(val idx: Int, val text: String, val voice: String)
+class NavStep(val idx: Int, val text: String, val voice: String, val type: Int = 0)
 
 class RouteCharger(val charger: Models.Charger, val alongKm: Double, val offsetKm: Double, val kw: Double)
 
@@ -233,7 +239,7 @@ object Planner {
                 for (i in 0 until n) if (cumKm[i] >= startKm - 2 && cumKm[i] <= endKm + 2) seg.add(pts[i])
                 if (seg.size >= 2) {
                     try {
-                        val list = FreeApi.chargersAlong(Geo.thin(seg, 80), 1500, minKw)
+                        val list = Providers.chargersAlong(seg, minKw)
                         for (c in list) {
                             if (c.id.isNotBlank() && !found.containsKey(c.id)) found[c.id] = c
                         }
@@ -408,9 +414,56 @@ object Planner {
                 }
             }
             if (bestD < 300) {
-                steps.add(NavStep(bestI, m.text, m.voice.ifBlank { m.text }))
+                steps.add(NavStep(bestI, m.text, m.voice.ifBlank { m.text }, m.type))
                 from = bestI
             }
+        }
+
+        // Speed limits and speed cameras, tied to route points.
+        val limits = ArrayList<Pair<Int, Int>>()
+        var li = 0
+        for ((loc, kmh) in route.speedLimits) {
+            var bestI = li
+            var bestD = Double.MAX_VALUE
+            for (i in li..min(n - 1, li + 3000)) {
+                val d = Geo.dist(pts[i], loc)
+                if (d < bestD) {
+                    bestD = d
+                    bestI = i
+                }
+            }
+            if (bestD < 150) {
+                limits.add(bestI to kmh)
+                li = bestI
+            }
+        }
+        val cameras = ArrayList<Int>()
+        try {
+            progress("Radarlar kontrol ediliyor…")
+            var startKm = 0.0
+            while (startKm < totalKm) {
+                val endKm = min(totalKm, startKm + 150.0)
+                val seg = ArrayList<LatLng>()
+                for (i in 0 until n) if (cumKm[i] >= startKm && cumKm[i] <= endKm) seg.add(pts[i])
+                if (seg.size >= 2) {
+                    for (cam in FreeApi.speedCamerasAlong(Geo.thin(seg, 120))) {
+                        var bi = 0
+                        var bd = Double.MAX_VALUE
+                        for (i in 0 until n) {
+                            val d = Geo.dist(pts[i], cam)
+                            if (d < bd) {
+                                bd = d
+                                bi = i
+                            }
+                        }
+                        if (bd < 80 && cameras.none { kotlin.math.abs(it - bi) < 3 }) cameras.add(bi)
+                    }
+                }
+                startKm = endKm
+            }
+            cameras.sort()
+        } catch (e: Exception) {
+            ObdManager.log("Radar verisi alınamadı: ${e.message}")
         }
 
         return Plan(
@@ -432,6 +485,10 @@ object Planner {
             cumWh = cumWh,
             steps = steps,
             routeChargers = routeChargers,
+            limits = limits,
+            cameras = cameras,
+            hasToll = route.hasToll,
+            hasFerry = route.hasFerry,
             map = null
         )
     }

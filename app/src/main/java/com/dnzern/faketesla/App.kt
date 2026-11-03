@@ -21,6 +21,18 @@ object Prefs {
         sp = c.getSharedPreferences("fake_tesla", Context.MODE_PRIVATE)
     }
 
+    var avoidTolls: Boolean
+        get() = sp.getBoolean("avoid_tolls", false)
+        set(v) = sp.edit().putBoolean("avoid_tolls", v).apply()
+
+    var avoidHighways: Boolean
+        get() = sp.getBoolean("avoid_highways", false)
+        set(v) = sp.edit().putBoolean("avoid_highways", v).apply()
+
+    var avoidFerries: Boolean
+        get() = sp.getBoolean("avoid_ferries", false)
+        set(v) = sp.edit().putBoolean("avoid_ferries", v).apply()
+
     /** Free TomTom key for live traffic (pasted in the menu). */
     var tomtomKey: String
         get() = sp.getString("tomtom_key", "") ?: ""

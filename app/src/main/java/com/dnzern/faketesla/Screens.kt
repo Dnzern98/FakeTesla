@@ -243,8 +243,12 @@ fun SearchScreen(mode: SearchMode, onBack: () -> Unit, onPicked: (PlaceRef?, Pla
             searchError?.let {
                 Text(it, color = Pal.Red, fontSize = 13.sp, modifier = Modifier.padding(20.dp))
             }
+            val here = remember { ObdManager.currentLatLng() }
             for (s in suggestions) {
-                PlaceRow(Ic.Pin, s.main, s.secondary) { pick(s) }
+                val ll = s.latLng
+                val dist = if (here != null && ll != null) distText(Geo.dist(here, ll)) else null
+                val sub = listOfNotNull(dist, s.secondary.ifBlank { null }).joinToString(" · ")
+                PlaceRow(Ic.Pin, s.main, sub) { pick(s) }
             }
             if (suggestions.isEmpty() && query.isBlank() && active == Field.Dest && mode == SearchMode.Trip) {
                 val home = Prefs.home
@@ -373,6 +377,18 @@ private fun PlanContent(p: Plan, onStart: (Plan) -> Unit, onReplan: () -> Unit) 
         }
     }
 
+    if (p.hasToll || p.hasFerry || p.cameras.isNotEmpty()) {
+        Text(
+            listOfNotNull(
+                if (p.hasToll) "Paralı yol içerir" else null,
+                if (p.hasFerry) "Feribot içerir" else null,
+                if (p.cameras.isNotEmpty()) "${p.cameras.size} radar" else null
+            ).joinToString(" · "),
+            color = Pal.Warn,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         StatPill("Toplam", duration(p.totalMin), Modifier.weight(1f))
         StatPill("Mesafe", fmt(p.totalKm, 0, "km"), Modifier.weight(1f))
@@ -776,6 +792,9 @@ fun MenuScreen(onBack: () -> Unit, onCar: () -> Unit, onSetHome: () -> Unit, onS
     var minKw by remember { mutableFloatStateOf(Prefs.minChargerKw.toFloat()) }
     var factor by remember { mutableFloatStateOf(Prefs.consumptionFactor) }
     var tomtom by remember { mutableStateOf(Prefs.tomtomKey) }
+    var avoidTolls by remember { mutableStateOf(Prefs.avoidTolls) }
+    var avoidHighways by remember { mutableStateOf(Prefs.avoidHighways) }
+    var avoidFerries by remember { mutableStateOf(Prefs.avoidFerries) }
     var tomtomSaved by remember { mutableStateOf(false) }
 
     Column(
@@ -801,6 +820,24 @@ fun MenuScreen(onBack: () -> Unit, onCar: () -> Unit, onSetHome: () -> Unit, onS
                 MenuRow(Ic.Home, Pal.Soft, "Ev", Prefs.home?.name ?: "Ayarlamak için dokun", onSetHome)
                 Divider()
                 MenuRow(Ic.Work, Pal.Soft, "İş", Prefs.work?.name ?: "Ayarlamak için dokun", onSetWork)
+            }
+
+            SectionLabel("Rota tercihleri")
+            SurfaceCard {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                    PrefSwitch("Paralı yollardan kaçın", avoidTolls) {
+                        avoidTolls = it
+                        Prefs.avoidTolls = it
+                    }
+                    PrefSwitch("Otoyollardan kaçın", avoidHighways) {
+                        avoidHighways = it
+                        Prefs.avoidHighways = it
+                    }
+                    PrefSwitch("Feribottan kaçın", avoidFerries) {
+                        avoidFerries = it
+                        Prefs.avoidFerries = it
+                    }
+                }
             }
 
             SectionLabel("Şarj planlama")
@@ -898,6 +935,19 @@ private fun MenuRow(icon: Ic, tint: Color, title: String, subtitle: String, onCl
             Text(subtitle, color = Pal.Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Glyph(Ic.Chevron, Color(0xFF6B7480), 18.dp)
+    }
+}
+
+@Composable
+private fun PrefSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, color = Pal.Text, fontSize = 15.sp, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 

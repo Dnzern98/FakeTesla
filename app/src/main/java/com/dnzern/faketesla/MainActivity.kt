@@ -154,6 +154,9 @@ fun Root(onShare: () -> Unit) {
     var showChargers by remember { mutableStateOf(true) }
     var chargers by remember { mutableStateOf<List<Models.Charger>>(emptyList()) }
     var lastFetch by remember(controller) { mutableStateOf<LatLng?>(null) }
+    var chargerStatus by remember { mutableStateOf<String?>(null) }
+    var chargerError by remember { mutableStateOf(false) }
+    var retryKey by remember { mutableStateOf(0) }
 
     fun refOf(c: Models.Charger) = PlaceRef(c.name, c.id.takeIf { it.isNotBlank() && !it.startsWith("osm-") }, c.loc)
 
@@ -164,6 +167,9 @@ fun Root(onShare: () -> Unit) {
     }
 
     controller.onChargerTap = { c -> selected = c }
+    controller.onLongPress = { p ->
+        if (screen == Screen.Home) startPlan(null, PlaceRef("İşaretlenen konum", null, p))
+    }
 
     // Start over Istanbul, then jump to the user once a position arrives.
     LaunchedEffect(ready, controller) {
@@ -186,36 +192,52 @@ fun Root(onShare: () -> Unit) {
         if (screen == Screen.Nav && p != null) {
             controller.showPlan(p)
             controller.showChargers(p.routeChargers.map { it.charger })
+            controller.showCameras(p.cameras.mapNotNull { p.routePts.getOrNull(it) })
         } else if (screen == Screen.Plan && p != null) {
             controller.showPlan(p)
             controller.showChargers(p.routeChargers.map { it.charger })
+            controller.showCameras(p.cameras.mapNotNull { p.routePts.getOrNull(it) })
             with(density) {
                 controller.fit(p.routePts, 140.dp.roundToPx(), 470.dp.roundToPx(), 40.dp.roundToPx())
             }
         } else {
             controller.showPlan(null)
+            controller.showCameras(emptyList())
             controller.showChargers(if (showChargers) chargers else emptyList())
         }
     }
 
     // Load fast chargers around the map centre when the map stops moving.
-    LaunchedEffect(idle, showChargers, screen) {
+    LaunchedEffect(idle, showChargers, screen, retryKey) {
         val (c, zoom) = idle ?: return@LaunchedEffect
-        if (!showChargers || screen != Screen.Home || zoom < 9.0) return@LaunchedEffect
+        if (!showChargers || screen != Screen.Home) return@LaunchedEffect
+        if (zoom < 9.0) {
+            chargerStatus = "İstasyonları görmek için yakınlaştır"
+            chargerError = false
+            return@LaunchedEffect
+        }
         val radius = when {
             zoom >= 13.0 -> 6000.0
             zoom >= 11.0 -> 15000.0
             else -> 30000.0
         }
         val last = lastFetch
-        if (last != null && Geo.dist(last, c) < radius / 3) return@LaunchedEffect
+        if (last != null && Geo.dist(last, c) < radius / 3) {
+            if (chargerStatus == "İstasyonları görmek için yakınlaştır") chargerStatus = null
+            return@LaunchedEffect
+        }
         delay(700L)
+        chargerStatus = "İstasyonlar yükleniyor…"
+        chargerError = false
         try {
             chargers = withContext(Dispatchers.IO) { Providers.nearbyChargers(c, radius, Prefs.minChargerKw) }
             lastFetch = c
             if (screen == Screen.Home) controller.showChargers(chargers)
+            chargerStatus = if (chargers.isEmpty()) "Bu bölgede hızlı şarj istasyonu bulunamadı" else null
         } catch (e: Exception) {
             ObdManager.log("Yakındaki istasyonlar alınamadı: ${e.message}")
+            chargerStatus = "İstasyonlar alınamadı · tekrar dene"
+            chargerError = true
         }
     }
 
@@ -241,6 +263,13 @@ fun Root(onShare: () -> Unit) {
         when (screen) {
             Screen.Home -> HomeOverlay(
                 plan = plan,
+                chargerStatus = if (showChargers) chargerStatus else null,
+                onChargerStatus = {
+                    if (chargerError) {
+                        lastFetch = null
+                        retryKey++
+                    }
+                },
                 chargersOn = showChargers,
                 selected = selected,
                 onCloseSelected = { selected = null },
@@ -348,6 +377,8 @@ fun Root(onShare: () -> Unit) {
 @Composable
 fun HomeOverlay(
     plan: Plan?,
+    chargerStatus: String?,
+    onChargerStatus: () -> Unit,
     chargersOn: Boolean,
     selected: Models.Charger?,
     onCloseSelected: () -> Unit,
@@ -414,6 +445,22 @@ fun HomeOverlay(
                     BatteryGlyph(0f, Pal.Green)
                     Text(if (connected) "Veri bekleniyor" else "Araç bağlı değil", color = Pal.Muted, fontSize = 14.sp)
                     Box(Modifier.size(8.dp).clip(CircleShape).background(Pal.Label))
+                }
+            }
+            if (chargerStatus != null) {
+                Row(
+                    modifier = Modifier
+                        .height(36.dp)
+                        .shadow(6.dp, RoundedCornerShape(18.dp))
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(Pal.Chip)
+                        .clickable(role = Role.Button, onClick = onChargerStatus)
+                        .padding(horizontal = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Glyph(Ic.Bolt, Pal.Green, 16.dp)
+                    Text(chargerStatus, color = Pal.Muted, fontSize = 13.sp)
                 }
             }
         }

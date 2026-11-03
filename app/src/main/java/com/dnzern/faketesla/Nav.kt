@@ -1,6 +1,21 @@
 package com.dnzern.faketesla
 
 import android.content.Context
+import android.content.Intent
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.semantics.Role
 import android.speech.tts.TextToSpeech
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -79,7 +94,13 @@ class NavInfo(
     val nextStop: Stop?,
     val distToStopKm: Double,
     /** Battery % expected at the next stop (or the destination), from live data when connected. */
-    val socAtNext: Double?
+    val socAtNext: Double?,
+    val thenStep: NavStep? = null,
+    /** Speed limit here in km/h, 0 when unknown. */
+    val limit: Int = 0,
+    /** Distance to the next speed camera in metres, null when none within 2 km. */
+    val cameraM: Double? = null,
+    val cameraIdx: Int = -1
 )
 
 private const val PCT_WH = EC3.USABLE_KWH * 10.0
@@ -133,7 +154,17 @@ fun navInfo(plan: Plan, idx: Int, offRouteM: Double, liveSoc: Double?): NavInfo 
     } else {
         null
     }
-    return NavInfo(idx, offRouteM, step, distStep, remainingKm, remainingMin, nextStop, distStop, soc)
+    val then = if (step != null) plan.steps.firstOrNull { it.idx > step.idx } else null
+    val limit = plan.limits.lastOrNull { it.first <= idx }?.second ?: 0
+    val cam = plan.cameras.firstOrNull { it > idx }
+    val camM = if (cam != null && hasCum) (plan.cumKm[cam] - kmHere) * 1000.0 else null
+    return NavInfo(
+        idx, offRouteM, step, distStep, remainingKm, remainingMin, nextStop, distStop, soc,
+        thenStep = then,
+        limit = limit,
+        cameraM = camM?.takeIf { it <= 2000.0 },
+        cameraIdx = cam ?: -1
+    )
 }
 
 fun distText(m: Double): String = when {
@@ -151,17 +182,21 @@ fun NavScreen(controller: MapCtl, onEnd: () -> Unit) {
     val location by ObdManager.location.collectAsState()
     val values by ObdManager.values.collectAsState()
     val connected by ObdManager.connected.collectAsState()
+    val userMoved by controller.userMoved.collectAsState()
     var lastIdx by remember(plan) { mutableIntStateOf(0) }
     var spokenFar by remember(plan) { mutableIntStateOf(-1) }
     var spokenNear by remember(plan) { mutableIntStateOf(-1) }
+    var spokenCam by remember(plan) { mutableIntStateOf(-1) }
     var offCount by remember(plan) { mutableIntStateOf(0) }
     var muted by remember { mutableStateOf(Voice.muted) }
     var info by remember(plan) { mutableStateOf<NavInfo?>(null) }
     var arrived by remember(plan) { mutableStateOf(false) }
+    var speedKmh by remember { mutableStateOf<Int?>(null) }
 
     DisposableEffect(Unit) {
         Voice.init(context)
         ObdManager.startLocation()
+        controller.userMoved.value = false
         onDispose { }
     }
 
@@ -174,12 +209,14 @@ fun NavScreen(controller: MapCtl, onEnd: () -> Unit) {
         val live = if (connected) (values["bms_soc"] ?: values["soc"]) else null
         val ni = navInfo(p, idx, off, live)
         info = ni
+        speedKmh = if (l.hasSpeed()) (l.speed * 3.6f).roundToInt() else null
 
-        val bearing = if (l.hasBearing() && l.speed > 1.5f) l.bearing else {
-            val ahead = p.routePts[minOf(p.routePts.size - 1, idx + 5)]
-            bearingTo(here, ahead)
+        if (!controller.userMoved.value) {
+            val bearing = if (l.hasBearing() && l.speed > 1.5f) l.bearing else {
+                bearingTo(here, p.routePts[minOf(p.routePts.size - 1, idx + 5)])
+            }
+            controller.follow(here, bearing, if (l.speed > 22f) 15.0 else 16.5)
         }
-        controller.follow(here, bearing, if (l.speed > 22f) 15.0 else 16.5)
 
         if (ni.remainingKm < 0.05 && !arrived) {
             arrived = true
@@ -197,6 +234,12 @@ fun NavScreen(controller: MapCtl, onEnd: () -> Unit) {
             }
         }
 
+        val camM = ni.cameraM
+        if (camM != null && camM < 550 && spokenCam != ni.cameraIdx) {
+            spokenCam = ni.cameraIdx
+            Voice.say("Dikkat, ${distText(camM)} ileride radar" + if (ni.limit > 0) ", hız sınırı ${ni.limit}" else "")
+        }
+
         // Off the route for a few fixes in a row: plan again from here.
         if (off > 80 && l.accuracy < 40f) offCount++ else offCount = 0
         if (offCount >= 3 && !busy) {
@@ -211,27 +254,122 @@ fun NavScreen(controller: MapCtl, onEnd: () -> Unit) {
 
     Box(Modifier.fillMaxSize()) {
         val ni = info
-        // Instruction banner
+
         Column(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
                 .padding(12.dp)
-                .fillMaxWidth()
-                .shadow(12.dp, RoundedCornerShape(20.dp))
-                .clip(RoundedCornerShape(20.dp))
-                .background(Pal.Blue)
-                .padding(horizontal = 20.dp, vertical = 16.dp)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            when {
-                busy -> Text("Rota yeniden hesaplanıyor…", color = Pal.OnBlue, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                arrived -> Text("Hedefe vardınız", color = Pal.OnBlue, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                ni == null -> Text("Konum bekleniyor…", color = Pal.OnBlue, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                ni.step != null -> {
-                    Text(distText(ni.distToStepM), color = Pal.OnBlue, fontSize = 30.sp, fontWeight = FontWeight.Bold)
-                    Text(ni.step.text, color = Pal.OnBlue, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            // Instruction banner
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .shadow(12.dp, RoundedCornerShape(20.dp))
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Pal.Blue)
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val step = ni?.step
+                when {
+                    busy -> Text("Rota yeniden hesaplanıyor…", color = Pal.OnBlue, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    arrived -> {
+                        TurnArrow(4, Pal.OnBlue, 44.dp)
+                        Spacer(Modifier.width(14.dp))
+                        Text("Hedefe vardınız", color = Pal.OnBlue, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    }
+                    ni == null -> Text("Konum bekleniyor…", color = Pal.OnBlue, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    step != null -> {
+                        TurnArrow(step.type, Pal.OnBlue, 48.dp)
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(distText(ni.distToStepM), color = Pal.OnBlue, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                            Text(step.text, color = Pal.OnBlue, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    else -> Text("Rotayı takip et", color = Pal.OnBlue, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 }
-                else -> Text("Rotayı takip et", color = Pal.OnBlue, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            }
+            val then = ni?.thenStep
+            if (then != null && !arrived && !busy) {
+                Row(
+                    modifier = Modifier
+                        .shadow(6.dp, RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Pal.OnBlue)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Sonra", color = Pal.Muted, fontSize = 13.sp)
+                    Spacer(Modifier.width(8.dp))
+                    TurnArrow(then.type, Pal.Text, 22.dp)
+                }
+            }
+            val camM = ni?.cameraM
+            if (camM != null && !arrived) {
+                Row(
+                    modifier = Modifier
+                        .shadow(6.dp, RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Pal.Warn)
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Radar · ${distText(camM)}", color = Color(0xFF2A1A00), fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        // Speed and speed limit, plus recenter
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .navigationBarsPadding()
+                .padding(start = 16.dp, bottom = 230.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            val limit = ni?.limit ?: 0
+            if (limit > 0) SpeedLimitSign(limit)
+            val spd = speedKmh
+            val over = spd != null && limit > 0 && spd > limit + 5
+            Box(
+                modifier = Modifier
+                    .size(68.dp)
+                    .shadow(8.dp, CircleShape)
+                    .clip(CircleShape)
+                    .background(if (over) Pal.Red else Pal.Chip),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(spd?.toString() ?: "–", color = Pal.Text, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    Text("km/sa", color = if (over) Pal.Text else Pal.Muted, fontSize = 10.sp)
+                }
+            }
+        }
+        if (userMoved) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .navigationBarsPadding()
+                    .padding(end = 16.dp, bottom = 230.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .height(48.dp)
+                        .shadow(8.dp, RoundedCornerShape(24.dp))
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(Pal.Chip)
+                        .clickable(role = Role.Button) { controller.userMoved.value = false }
+                        .padding(horizontal = 18.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Glyph(Ic.Locate, Pal.Blue, 20.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Ortala", color = Pal.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                }
             }
         }
 
@@ -249,19 +387,15 @@ fun NavScreen(controller: MapCtl, onEnd: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (ni != null) {
+                val eta = System.currentTimeMillis() + (ni.remainingMin * 60_000).toLong()
                 Row(verticalAlignment = Alignment.Bottom) {
                     Column(Modifier.weight(1f)) {
-                        Text("Varış", color = Pal.Muted, fontSize = 12.sp)
-                        Text(
-                            clock.format(Date(System.currentTimeMillis() + (ni.remainingMin * 60_000).toLong())),
-                            color = Pal.Text,
-                            fontSize = 26.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Text(if (plan?.traffic == true) "Varış · trafikle" else "Varış", color = Pal.Muted, fontSize = 12.sp)
+                        Text(clock.format(Date(eta)), color = Pal.Green, fontSize = 28.sp, fontWeight = FontWeight.Bold)
                     }
-                    Column(Modifier.weight(1f)) {
+                    Column(Modifier.weight(1.3f)) {
                         Text("Kalan", color = Pal.Muted, fontSize = 12.sp)
-                        Text("${fmt(ni.remainingKm, 0, "km")} · ${duration(ni.remainingMin)}", color = Pal.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        Text("${duration(ni.remainingMin)} · ${fmt(ni.remainingKm, 0, "km")}", color = Pal.Text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
                 val stop = ni.nextStop
@@ -279,17 +413,98 @@ fun NavScreen(controller: MapCtl, onEnd: () -> Unit) {
                         )
                     }
                 } else {
-                    val p = plan
-                    val soc = ni.socAtNext?.roundToInt() ?: p?.arrivalSoc
+                    val soc = ni.socAtNext?.roundToInt() ?: plan?.arrivalSoc
                     if (soc != null) Text("Hedefe varışta batarya %$soc", color = Pal.Text, fontSize = 14.sp)
                 }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlineButton(if (muted) "Sesi aç" else "Sesi kapat", Modifier.weight(1f)) {
-                    muted = !muted
-                    Voice.muted = muted
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlineButton(if (muted) "Ses aç" else "Sessiz", Modifier.weight(1f)) {
+                        muted = !muted
+                        Voice.muted = muted
+                    }
+                    OutlineButton("Paylaş", Modifier.weight(1f)) {
+                        val text = "Tahmini varışım ${clock.format(Date(eta))}" +
+                            (plan?.destName?.let { " · ${it.substringBefore(", ")}" } ?: "")
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, text)
+                        }
+                        try {
+                            context.startActivity(Intent.createChooser(send, "Varış saatini paylaş").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        } catch (_: Exception) {
+                        }
+                    }
+                    Box(Modifier.weight(1f)) { PrimaryButton("Bitir", onEnd) }
                 }
-                Box(Modifier.weight(1f)) { PrimaryButton("Bitir", onEnd) }
+            } else {
+                Box(Modifier.fillMaxWidth()) { PrimaryButton("Bitir", onEnd) }
+            }
+        }
+    }
+}
+
+/** Round European-style speed limit sign. */
+@Composable
+fun SpeedLimitSign(kmh: Int) {
+    Box(
+        modifier = Modifier
+            .size(56.dp)
+            .shadow(6.dp, CircleShape)
+            .clip(CircleShape)
+            .background(Color.White)
+            .border(6.dp, Color(0xFFD32F2F), CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(kmh.toString(), color = Color.Black, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+/** Turn arrow for a Valhalla maneuver type. */
+@Composable
+fun TurnArrow(type: Int, color: Color, size: androidx.compose.ui.unit.Dp) {
+    val angle = when (type) {
+        9, 23, 37, 2 -> 45f
+        10, 18, 20, 5 -> 90f
+        11 -> 135f
+        16, 24, 38, 3 -> -45f
+        15, 19, 21, 6 -> -90f
+        14 -> -135f
+        else -> 0f
+    }
+    Canvas(Modifier.size(size)) {
+        val w = this.size.width
+        val u = w / 24f
+        val stroke = Stroke(width = 3f * u, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        when (type) {
+            4 -> {
+                // destination: flag
+                drawLine(color, Offset(7 * u, 21 * u), Offset(7 * u, 3 * u), 2.5f * u, StrokeCap.Round)
+                drawPath(Path().apply { moveTo(7 * u, 4 * u); lineTo(19 * u, 7.5f * u); lineTo(7 * u, 11 * u); close() }, color)
+            }
+            12, 13 -> {
+                // U-turn
+                val left = type == 13
+                val x1 = if (left) 16 * u else 8 * u
+                val x2 = if (left) 8 * u else 16 * u
+                drawPath(
+                    Path().apply {
+                        moveTo(x1, 21 * u); lineTo(x1, 9 * u)
+                        cubicTo(x1, 3 * u, x2, 3 * u, x2, 9 * u); lineTo(x2, 14 * u)
+                    },
+                    color,
+                    style = stroke
+                )
+                drawPath(Path().apply { moveTo(x2 - 4 * u, 11 * u); lineTo(x2, 16 * u); lineTo(x2 + 4 * u, 11 * u) }, color, style = stroke)
+            }
+            26, 27 -> {
+                // roundabout
+                drawCircle(color, 5 * u, Offset(12 * u, 12 * u), style = stroke)
+                drawLine(color, Offset(12 * u, 22 * u), Offset(12 * u, 17 * u), 3 * u, StrokeCap.Round)
+                drawLine(color, Offset(15.5f * u, 8.5f * u), Offset(20 * u, 4 * u), 3 * u, StrokeCap.Round)
+                drawPath(Path().apply { moveTo(15 * u, 4 * u); lineTo(20 * u, 4 * u); lineTo(20 * u, 9 * u) }, color, style = stroke)
+            }
+            else -> rotate(angle, pivot = Offset(12 * u, 14 * u)) {
+                drawLine(color, Offset(12 * u, 22 * u), Offset(12 * u, 5 * u), 3 * u, StrokeCap.Round)
+                drawPath(Path().apply { moveTo(6 * u, 11 * u); lineTo(12 * u, 4 * u); lineTo(18 * u, 11 * u) }, color, style = stroke)
             }
         }
     }

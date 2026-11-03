@@ -12,8 +12,8 @@ android {
         applicationId = "com.dnzern.faketesla"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.9"
+        versionCode = 10
+        versionName = "1.0"
     }
 
     // Fixed signing key so new versions install over the old one.

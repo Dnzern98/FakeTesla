@@ -50,6 +50,10 @@ interface MapCtl {
     fun fit(points: List<LatLng>, topPx: Int, bottomPx: Int, sidePx: Int)
     /** Driving view: centred on the car, rotated to the heading, tilted. */
     fun follow(p: LatLng, bearing: Float, zoom: Double)
+    /** Becomes true when the user drags the map by hand. */
+    val userMoved: MutableStateFlow<Boolean>
+    var onLongPress: (LatLng) -> Unit
+    fun showCameras(points: List<LatLng>)
 }
 
 /** MapLibre + OpenFreeMap (free, no key). */
@@ -65,6 +69,9 @@ class MapController : MapCtl {
     override val idle = MutableStateFlow<Pair<LatLng, Double>?>(null)
     override val ready = MutableStateFlow(false)
     override var onChargerTap: (Models.Charger) -> Unit = {}
+    override val userMoved = MutableStateFlow(false)
+    override var onLongPress: (LatLng) -> Unit = {}
+    private var camSrc: GeoJsonSource? = null
 
     fun attach(m: MapLibreMap, style: Style) {
         map = m
@@ -112,6 +119,17 @@ class MapController : MapCtl {
                 PropertyFactory.circleStrokeWidth(2.5f)
             )
         )
+        val cams = GeoJsonSource("cams")
+        style.addSource(cams)
+        camSrc = cams
+        style.addLayer(
+            CircleLayer("cams-layer", "cams").withProperties(
+                PropertyFactory.circleColor("#FFB74D"),
+                PropertyFactory.circleRadius(6f),
+                PropertyFactory.circleStrokeColor("#1A1D21"),
+                PropertyFactory.circleStrokeWidth(2f)
+            )
+        )
         style.addLayer(
             CircleLayer("stops-layer", "stops").withProperties(
                 PropertyFactory.circleColor("#2FBF71"),
@@ -157,6 +175,13 @@ class MapController : MapCtl {
             val t = p.target
             if (t != null) idle.value = LatLng(t.latitude, t.longitude) to p.zoom
         }
+        m.addOnCameraMoveStartedListener { reason ->
+            if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) userMoved.value = true
+        }
+        m.addOnMapLongClickListener { point ->
+            onLongPress(LatLng(point.latitude, point.longitude))
+            true
+        }
         m.addOnMapClickListener { point ->
             val screen: PointF = m.projection.toScreenLocation(point)
             val box = android.graphics.RectF(screen.x - 30f, screen.y - 30f, screen.x + 30f, screen.y + 30f)
@@ -199,6 +224,11 @@ class MapController : MapCtl {
             f
         }
         chargersSrc?.setGeoJson(FeatureCollection.fromFeatures(features))
+    }
+
+    override fun showCameras(points: List<LatLng>) {
+        val list = points
+        camSrc?.setGeoJson(points(list))
     }
 
     override fun showMe(p: LatLng?) {

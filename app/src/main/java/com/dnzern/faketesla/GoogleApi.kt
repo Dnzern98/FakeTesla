@@ -9,7 +9,8 @@ object Models {
 
     class Step(val distanceM: Int, val staticDurationS: Double, val polyline: String)
 
-    class Maneuver(val loc: LatLng, val text: String, val voice: String)
+    /** [type] is Valhalla's maneuver type (turn left, roundabout, …). */
+    class Maneuver(val loc: LatLng, val text: String, val voice: String, val type: Int = 0)
 
     class Route(
         val distanceM: Int,
@@ -17,7 +18,11 @@ object Models {
         val staticDurationS: Double,
         val polyline: String,
         val steps: List<Step>,
-        val maneuvers: List<Maneuver> = emptyList()
+        val maneuvers: List<Maneuver> = emptyList(),
+        val hasToll: Boolean = false,
+        val hasFerry: Boolean = false,
+        /** Speed limit (km/h) starting at each point; 0 = unknown. */
+        val speedLimits: List<Pair<LatLng, Int>> = emptyList()
     )
 
     class Charger(
